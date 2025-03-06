@@ -160,7 +160,7 @@ class LLMNeedleHaystackTester:
         
         self.model_name = model_name
 
-        self.enc = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+        self.enc = AutoTokenizer.from_pretrained(model_name)
         print("loading from %s" % model_name)
         config = AutoConfig.from_pretrained(model_name)
         self.layer_num, self.head_num = config.num_hidden_layers, config.num_attention_heads
@@ -181,6 +181,8 @@ class LLMNeedleHaystackTester:
             self.model_to_test = Phi3ForCausalLM.from_pretrained(
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
+        elif "Ministral" in self.model_version:
+            self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True).eval()
         else:
             self.model_to_test = LlamaForCausalLM.from_pretrained(model_name,
                 use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='auto').eval()
