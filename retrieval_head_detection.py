@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from collections import defaultdict
 import time
 import torch
+from tqdm import tqdm
 
 
 
@@ -214,11 +215,14 @@ class LLMNeedleHaystackTester:
     def run_test(self, args):
         # Run through each iteration of context_lengths and depths
         tasks = []
+        total_iters = len(self.context_lengths) * len(self.document_depth_percents)
+        pbar = tqdm(total=total_iters)
          
         for context_length in self.context_lengths:
             if context_length < args.s_len or context_length > args.e_len: continue
             for depth_percent in self.document_depth_percents:
                 task = self.bound_evaluate_and_log(context_length, depth_percent)
+                pbar.update(1)
 
     def retrieval_calculate(self, attention_maxtrix,retrieval_score, inp, step_token,topk=1):
         for layer_idx in range(self.layer_num):
