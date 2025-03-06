@@ -161,16 +161,7 @@ class LLMNeedleHaystackTester:
             raise ValueError("document_depth_percent_interval_type must be either None, 'linear' or 'sigmoid'. If you'd like your own distribution give a list of ints in via document_depth_percent_intervals")
         
         self.model_name = model_name
-                    
-        if quantized:
-            from transformers import BitsAndBytesConfig
-            self.bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16
-            )
-
+        
         self.enc = AutoTokenizer.from_pretrained(model_name)
         print("loading from %s" % model_name)
         config = AutoConfig.from_pretrained(model_name)
@@ -193,7 +184,14 @@ class LLMNeedleHaystackTester:
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         elif "Ministral" in self.model_version:
-            if quantized:
+            if quantize:
+                from transformers import BitsAndBytesConfig
+                self.bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16
+                )
                 self.model_to_test = AutoModelForCausalLM.from_pretrained(
                     model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True, quantization_config=self.bnb_config
                 ).eval()
@@ -540,12 +538,11 @@ if __name__ == "__main__":
     parser.add_argument('--model_path', type=str, default=None, help='path to model')
     parser.add_argument('--model_name', type=str, default=None, help='name of model')
     parser.add_argument('--model_name_suffix', type=str, default=None, help='name of model')
-    parser.add_argument('--model_provider', type=str, default="LLaMA", help='which model to use
+    parser.add_argument('--model_provider', type=str, default="LLaMA", help='which model to use')
     parser.add_argument('--quantize', action='store_true', help='Enable model quantization')
     args = parser.parse_args()
    
     model_name = args.model_path
-
 
     ht = LLMNeedleHaystackTester(model_name=model_name, 
                                  model_name_suffix=args.model_name_suffix,
