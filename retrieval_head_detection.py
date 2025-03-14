@@ -48,6 +48,8 @@ from source.modeling_phi3 import Phi3ForCausalLM
 import numpy as np
 import argparse
 from rouge_score import rouge_scorer
+from rouge_chinese import Rouge
+import jieba
 from datetime import datetime, timezone
 from collections import defaultdict
 import time
@@ -62,6 +64,7 @@ def reset_rope(model, model_max_train_len, scaling_factor):
         l.self_attn.rotary_emb._set_cos_sin_cache(seq_len=model_max_train_len, device=l.self_attn.rotary_emb.inv_freq.device, dtype=torch.float32)
     return
 scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
+scorer_zh = Rouge()
 
 class LLMNeedleHaystackTester:
     """
@@ -337,7 +340,10 @@ class LLMNeedleHaystackTester:
         test_end_time = time.time()
         test_elapsed_time = test_end_time - test_start_time
         
-        score = scorer.score(self.real_needle, response)['rouge1'].recall*100
+        if self.language == "en":
+            score = scorer.score(self.real_needle, response)['rouge1'].recall*100
+        else:
+            score = scorer_zh.get_scores(response, self.real_needle)[0]["rouge-1"]["r"]*100
         ## if recall > 50, we determine this retrieval succeed and update the retrieval score
         if score > 50:
             self.retrieval_head_accumulate(retrieval_score)
