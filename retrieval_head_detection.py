@@ -343,7 +343,9 @@ class LLMNeedleHaystackTester:
         if self.language == "en":
             score = scorer.score(self.real_needle, response)['rouge1'].recall*100
         else:
-            score = scorer_zh.get_scores(response, self.real_needle)[0]["rouge-1"]["r"]*100
+            response = ' '.join(jieba.cut(response))
+            real_needle_zh =  ' '.join(jieba.cut(self.real_needle))
+            score = scorer_zh.get_scores(response, real_needle_zh)[0]["rouge-1"]["r"]*100
         ## if recall > 50, we determine this retrieval succeed and update the retrieval score
         if score > 50:
             self.retrieval_head_accumulate(retrieval_score)
