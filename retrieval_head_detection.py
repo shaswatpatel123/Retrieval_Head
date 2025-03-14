@@ -126,7 +126,11 @@ class LLMNeedleHaystackTester:
         needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles{'' if self.language == 'en' else '_'+self.language}.jsonl")]
         
         self.needle_list = [l["needle"] for l in needles_and_stacks]
-        self.retrieval_question_list = [l["question"] for l in needles_and_stacks]
+        
+        if self.language == "en":
+            self.retrieval_question_list = [l["question"] for l in needles_and_stacks]
+        else:
+            self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
         
         if self.language == "en":
             self.real_ansers_list = [l["real_needle"] for l in needles_and_stacks]
