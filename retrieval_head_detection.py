@@ -90,7 +90,9 @@ class LLMNeedleHaystackTester:
                 final_context_length_buffer = 200,
                 seconds_to_sleep_between_completions = None,
                 print_ongoing_status = True,
-                quantize=False):
+                quantize=False,
+                language="en"
+                ):
         """        
         :param needle: The needle to be found in the haystack. Default is None.
         :param haystack_dir: The directory of text files to use as background context (or a haystack) in which the needle is to be found. Default is Paul Graham Essays.
@@ -115,14 +117,27 @@ class LLMNeedleHaystackTester:
         :param model_name: The name of the model. Default is 'gpt-4-1106-preview'.
         :param seconds_to_sleep_between_completions: The number of seconds to sleep between completions. Default is None.
         :param print_ongoing_status: Whether or not to print the ongoing status. Default is True.
+        :param quantize: Whether to quantize the models or not
+        :param language: which language NIAH to setup
         """
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
-        needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles.jsonl")]
+        self.language = language
+        needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles{'' if self.language == 'en' else '_'+self.language}.jsonl")]
+        
         self.needle_list = [l["needle"] for l in needles_and_stacks]
-        self.haystack_dir_list = [f"{haystack_dir}/part{i}" for i in range(1, 4)]
         self.retrieval_question_list = [l["question"] for l in needles_and_stacks]
-        self.real_ansers_list = [l["real_needle"] for l in needles_and_stacks]
+        
+        if self.language == "en":
+            self.real_ansers_list = [l["real_needle"] for l in needles_and_stacks]
+        elif self.language == "zh":
+            self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
+        
+        if self.language == "en":
+            self.haystack_dir_list = [f"{haystack_dir}/part{i}" for i in range(1, 4)]
+        elif self.language == "zh":
+            self.haystack_dir_list = [f"{haystack_dir}/zh" for i in range(1, 4)]
+        
         self.results_version = results_version
         self.num_concurrent_requests = num_concurrent_requests
         self.save_results = save_results
@@ -289,10 +304,16 @@ class LLMNeedleHaystackTester:
             question += '<|im_end|>\n<|im_start|>assistant\n'
             input_ids = self.enc(input_context , return_tensors="pt")['input_ids']
         '''
-        if self.model_version in ["Mistral-7B-Instruct-v0.2", "Qwen1.5-14B-Chat"]:
-            prompt = [
-            {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\nAnswer:"},
-            ]
+        if self.model_version in ["Mistral-7B-Instruct-v0.2", "Qwen1.5-14B-Chat", "Ministral-8B-Instruct-2410"]:
+            if self.language == "zh":
+                prompt = [
+                    {"role": "user", "content": f"<book>{context}</book>根据书中内容，提出问题：{self.retrieval_question}\n回答:"},
+                ]
+            else:
+                prompt = [
+                    {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\nAnswer:"},
+                ]
+
             input_ids = self.enc.apply_chat_template(conversation=prompt, tokenize=True,  add_generation_prompt=True, return_tensors='pt')
         else:
             input_context = context + question
@@ -470,10 +491,22 @@ class LLMNeedleHaystackTester:
         context = ""
         max_context_length = max(self.context_lengths)
 
-        while len(context.split()) < max_context_length:
-            for file in glob.glob(f"{self.haystack_dir}/*.txt"):
-                with open(file, 'r') as f:
-                    context += f.read()
+        if self.language == "zh":
+            local_c_len = 0
+            while local_c_len < max_context_length:
+                for file in glob.glob(f"{self.haystack_dir}/*.jsonl"):
+                    with open(file, "r") as f:
+                        for line in f.readlines():
+                            if local_c_len < max_context_length:
+                                local_c_len += self.get_context_length_in_tokens(json.loads(line)['text'])
+                            else:
+                                break
+
+        else:
+            while len(context.split()) < max_context_length:
+                for file in glob.glob(f"{self.haystack_dir}/*.txt"):
+                    with open(file, 'r') as f:
+                        context += f.read()
         return context
 
     def get_tokens_from_context(self, context):
@@ -540,6 +573,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_name_suffix', type=str, default=None, help='name of model')
     parser.add_argument('--model_provider', type=str, default="LLaMA", help='which model to use')
     parser.add_argument('--quantize', action='store_true', help='Enable model quantization')
+    parser.add_argument('--language', type=str, default="en", help="Specify the language to test")
     args = parser.parse_args()
    
     model_name = args.model_path
@@ -552,6 +586,7 @@ if __name__ == "__main__":
                                  context_lengths_min=args.s_len,
                                  context_lengths_max=args.e_len,
                                  quantize=args.quantize,
+                                 language=args.language
                                  )
 
     ht.start_test(args)
