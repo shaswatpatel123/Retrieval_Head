@@ -94,7 +94,8 @@ class LLMNeedleHaystackTester:
                 seconds_to_sleep_between_completions = None,
                 print_ongoing_status = True,
                 quantize=False,
-                language="en"
+                language="en",
+                h_language="NA"
                 ):
         """        
         :param needle: The needle to be found in the haystack. Default is None.
@@ -122,10 +123,15 @@ class LLMNeedleHaystackTester:
         :param print_ongoing_status: Whether or not to print the ongoing status. Default is True.
         :param quantize: Whether to quantize the models or not
         :param language: which language NIAH to setup
+        :param h_language: which haystack language to setup (if different from needle)
         """
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
         self.language = language
+        if h_language == "NA":
+            self.h_language = language
+        else:
+            self.h_language = h_language
         needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles{'' if self.language == 'en' else '_'+self.language}.jsonl")]
         
         self.needle_list = [l["needle"] for l in needles_and_stacks]
@@ -144,11 +150,11 @@ class LLMNeedleHaystackTester:
         elif self.language == "de":
              self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
         
-        if self.language == "en":
+        if self.h_language == "en":
             self.haystack_dir_list = [f"{haystack_dir}/part{i}" for i in range(1, 4)]
-        elif self.language == "zh":
+        elif self.h_language == "zh":
             self.haystack_dir_list = [f"{haystack_dir}/zh" for i in range(1, 4)]
-        elif self.language == "de":
+        elif self.h_language == "de":
             self.haystack_dir_list = [f"{haystack_dir}/de" for i in range(1, 4)]
 
         if self.language == "zh" or self.language == "de":
@@ -425,22 +431,22 @@ class LLMNeedleHaystackTester:
             results['file_name'] : context_file_location
 
             # Save the context to file for retesting
-            if not os.path.exists('contexts'):
-                os.makedirs('contexts')
+            if not os.path.exists(f'contexts/{self.language}{self.h_language}'):
+                os.makedirs(f'contexts/{self.language}{self.h_language}', exist_ok=True)
 
-            if not os.path.exists(f'contexts/{self.model_version}'):
-                os.makedirs(f'contexts/{self.model_version}')
+            if not os.path.exists(f'contexts/{self.language}{self.h_language}/{self.model_version}'):
+                os.makedirs(f'contexts/{self.language}{self.h_language}/{self.model_version}', exist_ok=True)
 
-            with open(f'contexts/{self.model_version}/{context_file_location}_context.txt', 'w') as f:
+            with open(f'contexts/{self.language}{self.h_language}/{self.model_version}/{context_file_location}_context.txt', 'w') as f:
                 f.write(context)
             
         if self.save_results:
             # Save the context to file for retesting
-            if not os.path.exists(f'results/graph/{self.model_version}'):
-                os.makedirs(f'results/graph/{self.model_version}')
+            if not os.path.exists(f'results/graph/{self.language}{self.h_language}/{self.model_version}'):
+                os.makedirs(f'results/graph/{self.language}{self.h_language}/{self.model_version}')
             
             # Save the result to file for retesting
-            p = f'results/graph/{self.model_version}/{context_file_location}_results.json'
+            p = f'results/graph/{self.language}{self.h_language}/{self.model_version}/{context_file_location}_results.json'
             print("Writing at %s" % p)
             with open(p, 'w') as f:
                 json.dump(results, f)
@@ -547,7 +553,7 @@ class LLMNeedleHaystackTester:
         context = ""
         max_context_length = max(self.context_lengths)
 
-        if self.language == "zh":
+        if self.h_language == "zh":
             local_c_len = 0
             while local_c_len < max_context_length:
                 for file in glob.glob(f"{self.haystack_dir}/*.jsonl"):
@@ -559,13 +565,13 @@ class LLMNeedleHaystackTester:
                             else:
                                 break
 
-        elif self.language == "de":
+        elif self.h_language == "de":
             while len(context.split()) < max_context_length:
                 for file in glob.glob(f"{self.haystack_dir}/wiki*"):
                     with open(file, 'r') as f:
                         context += f.read()
 
-        elif self.language == "en":
+        elif self.h_language == "en":
             while len(context.split()) < max_context_length:
                 for file in glob.glob(f"{self.haystack_dir}/*.txt"):
                     with open(file, 'r') as f:
@@ -618,12 +624,13 @@ class LLMNeedleHaystackTester:
             if self.print_ongoing_status:
                 self.print_start_test_summary()
             self.run_test(args)
-        if os.path.exists(f"head_score/{self.model_version}.json"):
-            with open(f"./head_score/{self.model_version}.json", "r") as file:
+        os.makedirs(f"head_score/{self.language}{self.h_language}/", exist_ok=True)
+        if os.path.exists(f"head_score/{self.language}{self.h_language}/{self.model_version}.json"):
+            with open(f"./head_score/{self.language}{self.h_language}/{self.model_version}.json", "r") as file:
                 head_counter = json.loads(file.readline())
             for k,v in head_counter.items():
                 self.head_counter[k] += v
-        with open(f"head_score/{self.model_version}.json", 'w') as f:
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'w') as f:
             json.dump(self.head_counter, f)
 
 
@@ -638,6 +645,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_provider', type=str, default="LLaMA", help='which model to use')
     parser.add_argument('--quantize', action='store_true', help='Enable model quantization')
     parser.add_argument('--language', type=str, default="en", help="Specify the language to test")
+    parser.add_argument('-h','--haystack_language', type=str, help="[OPTIONAL] Specify haystack language, if different from needle") 
     args = parser.parse_args()
    
     model_name = args.model_path
@@ -650,7 +658,8 @@ if __name__ == "__main__":
                                  context_lengths_min=args.s_len,
                                  context_lengths_max=args.e_len,
                                  quantize=args.quantize,
-                                 language=args.language
+                                 language=args.language,
+                                 h_language=args.haystack_language
                                  )
 
     ht.start_test(args)
