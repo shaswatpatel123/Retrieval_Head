@@ -95,7 +95,7 @@ class LLMNeedleHaystackTester:
                 print_ongoing_status = True,
                 quantize=False,
                 language="en",
-                h_language="NA"
+                h_language=None
                 ):
         """        
         :param needle: The needle to be found in the haystack. Default is None.
@@ -128,37 +128,23 @@ class LLMNeedleHaystackTester:
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
         self.language = language
-        if h_language == "NA":
+
+        if h_language is None:
             self.h_language = language
         else:
             self.h_language = h_language
-        needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles{'' if self.language == 'en' else '_'+self.language}.jsonl")]
+
+        needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.language}.jsonl")]
         
         self.needle_list = [l["needle"] for l in needles_and_stacks]
         
-        if self.language == "en":
-            self.retrieval_question_list = [l["question"] for l in needles_and_stacks]
-        elif self.language == "zh":
-            self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
-        elif self.language == "de":
-            self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
+        self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
         
-        if self.language == "en":
-            self.real_ansers_list = [l["real_needle"] for l in needles_and_stacks]
-        elif self.language == "zh":
-            self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
-        elif self.language == "de":
-             self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
+        self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
         
-        if self.h_language == "en":
-            self.haystack_dir_list = [f"{haystack_dir}/part{i}" for i in range(1, 4)]
-        elif self.h_language == "zh":
-            self.haystack_dir_list = [f"{haystack_dir}/zh" for i in range(1, 4)]
-        elif self.h_language == "de":
-            self.haystack_dir_list = [f"{haystack_dir}/de" for i in range(1, 4)]
+        self.haystack_dir_list = [f"{haystack_dir}/{self.h_language}" for i in range(1, 4)]
 
-        if self.language == "zh" or self.language == "de":
-            self.arg2 = [l["arg2"] for l in needles_and_stacks]
+        self.arg2 = [l["arg2"] for l in needles_and_stacks]
         
         self.results_version = results_version
         self.num_concurrent_requests = num_concurrent_requests
@@ -375,6 +361,7 @@ class LLMNeedleHaystackTester:
         score2 = 0
         if self.language == "en" or self.language == "de":
             score = scorer.score(self.real_needle, response)['rouge1'].recall*100
+            score2 = scorer.score(self.real_arg2, response)['rouge1'].recall*100
         else:
             response = ' '.join(jieba.cut(response))
             real_needle_zh =  ' '.join(jieba.cut(self.real_needle))
@@ -565,17 +552,15 @@ class LLMNeedleHaystackTester:
                             else:
                                 break
 
-        elif self.h_language == "de":
+        else:
             while len(context.split()) < max_context_length:
-                for file in glob.glob(f"{self.haystack_dir}/wiki*"):
-                    with open(file, 'r') as f:
-                        context += f.read()
-
-        elif self.h_language == "en":
-            while len(context.split()) < max_context_length:
-                for file in glob.glob(f"{self.haystack_dir}/*.txt"):
-                    with open(file, 'r') as f:
-                        context += f.read()
+                for file in glob.glob(f"{self.haystack_dir}/*.jsonl"):
+                    with open(file, "r") as f:
+                        for line in f.readlines():
+                            if len(context.split()) < max_context_length:
+                                context += json.loads(line)["text"]
+                            else:
+                                break
         return context
 
     def get_tokens_from_context(self, context):
@@ -645,7 +630,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_provider', type=str, default="LLaMA", help='which model to use')
     parser.add_argument('--quantize', action='store_true', help='Enable model quantization')
     parser.add_argument('--language', type=str, default="en", help="Specify the language to test")
-    parser.add_argument('-h','--haystack_language', type=str, help="[OPTIONAL] Specify haystack language, if different from needle") 
+    parser.add_argument('-hl','--haystack_language', type=str, help="[OPTIONAL] Specify haystack language, if different from needle") 
     args = parser.parse_args()
    
     model_name = args.model_path
