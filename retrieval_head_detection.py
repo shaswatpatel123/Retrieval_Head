@@ -132,18 +132,27 @@ class LLMNeedleHaystackTester:
         
         if self.language == "en":
             self.retrieval_question_list = [l["question"] for l in needles_and_stacks]
-        else:
+        elif self.language == "zh":
+            self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
+        elif self.language == "de":
             self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
         
         if self.language == "en":
             self.real_ansers_list = [l["real_needle"] for l in needles_and_stacks]
         elif self.language == "zh":
             self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
+        elif self.language == "de":
+             self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
         
         if self.language == "en":
             self.haystack_dir_list = [f"{haystack_dir}/part{i}" for i in range(1, 4)]
         elif self.language == "zh":
             self.haystack_dir_list = [f"{haystack_dir}/zh" for i in range(1, 4)]
+        elif self.language == "de":
+            self.haystack_dir_list = [f"{haystack_dir}/de" for i in range(1, 4)]
+
+        if self.language == "zh" or self.language == "de":
+            self.arg2 = [l["arg2"] for l in needles_and_stacks]
         
         self.results_version = results_version
         self.num_concurrent_requests = num_concurrent_requests
@@ -201,24 +210,32 @@ class LLMNeedleHaystackTester:
             self.model_to_test = MistralForCausalLM.from_pretrained(
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
-        elif "Phi3" in self.model_version:
+        elif "Phi" in self.model_version:
             self.model_to_test = Phi3ForCausalLM.from_pretrained(
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         elif "Ministral" in self.model_version:
-            if quantize:
-                from transformers import BitsAndBytesConfig
-                self.bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.bfloat16
-                )
-                self.model_to_test = AutoModelForCausalLM.from_pretrained(
-                    model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True, quantization_config=self.bnb_config
-                ).eval()
+            # Use flash_attention_2 if a100
+            if "a100" in torch.cuda.get_device_name(0).lower():
+                print("Using flash attention 2 without quantization")
+                self.model_to_test = MistralForCausalLM.from_pretrained(
+                        model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                    ).eval()
             else:
-                self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True).eval()
+                if quantize:
+                    from transformers import BitsAndBytesConfig
+                    self.bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16
+                    )
+
+                    self.model_to_test = AutoModelForCausalLM.from_pretrained(
+                        model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True, quantization_config=self.bnb_config
+                    ).eval()
+                else:
+                    self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True).eval() 
         else:
             self.model_to_test = LlamaForCausalLM.from_pretrained(model_name,
                 use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='auto').eval()
@@ -304,7 +321,13 @@ class LLMNeedleHaystackTester:
         # This helps if the program stop running and you want to restart later
         # Go generate the required length context and place your needle statement in
         context = self.generate_context(context_length, depth_percent)
-        question = f"Based on the content of the book, Question: {self.retrieval_question}\nAnswer:"
+        if self.language == "en":
+            question = f"Based on the content of the book, Question: {self.retrieval_question}\nAnswer:"
+        elif self.language == "de":
+            question = f"Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\nAntwort:"
+        elif self.language == "zh":
+            question = f"根据书本内容，提出问: {self.retrieval_question}\nAnswer:"
+
         '''
         if self.model_version=="Qwen1.5-14B-Chat":
             context = "<|im_start|>system\nYou are a helpful assistant<|im_end|>\n<|im_start|>user\n" + context input_context = "f{context}\nquestion<|im_end|>\n<|im_start|>assistant\n
@@ -316,6 +339,9 @@ class LLMNeedleHaystackTester:
                 prompt = [
                     {"role": "user", "content": f"<book>{context}</book>根据书中内容，提出问题：{self.retrieval_question}\n回答:"},
                 ]
+            elif self.language == "de":
+                prompt = [
+                    {"role": "user", "content": f"<book>{context}</book>Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\nAntwort:"},                                                                                                                             ]
             else:
                 prompt = [
                     {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\nAnswer:"},
@@ -340,19 +366,37 @@ class LLMNeedleHaystackTester:
         test_end_time = time.time()
         test_elapsed_time = test_end_time - test_start_time
         
-        if self.language == "en":
+        score2 = 0
+        if self.language == "en" or self.language == "de":
             score = scorer.score(self.real_needle, response)['rouge1'].recall*100
         else:
             response = ' '.join(jieba.cut(response))
             real_needle_zh =  ' '.join(jieba.cut(self.real_needle))
-            score = scorer_zh.get_scores(response, real_needle_zh)[0]["rouge-1"]["r"]*100
+            
+            try:
+                score = scorer_zh.get_scores(response, real_needle_zh)[0]["rouge-1"]["r"]*100
+            except:
+                # In case of empty response!
+                score = 0
+
+            try:
+                real_arg2_zh = ' '.join(jieba.cut(self.real_arg2))
+                score2 = scorer_zh.get_scores(response, real_arg2_zh)[0]["rouge-1"]["r"]*100
+            except:
+                score2 = 0
+
+
         ## if recall > 50, we determine this retrieval succeed and update the retrieval score
-        if score > 50:
+        if score > 50 or score2 >= 99:
             self.retrieval_head_accumulate(retrieval_score)
             head_score = [(i[0], np.mean(i[1])) for i in self.head_counter.items()]
             head_score = sorted(head_score, key=lambda x:x[1], reverse=True)
             print([[i[0]] for i in head_score][:20])
-
+        
+        if score <= 50 and score2 >= 99:
+            # Make logging easy
+            score = score2
+        
         results = {
             'model' : self.model_to_test_description,
             'context_length' : int(context_length),
@@ -511,10 +555,17 @@ class LLMNeedleHaystackTester:
                         for line in f.readlines():
                             if local_c_len < max_context_length:
                                 local_c_len += self.get_context_length_in_tokens(json.loads(line)['text'])
+                                context += json.loads(line)['text']
                             else:
                                 break
 
-        else:
+        elif self.language == "de":
+            while len(context.split()) < max_context_length:
+                for file in glob.glob(f"{self.haystack_dir}/wiki*"):
+                    with open(file, 'r') as f:
+                        context += f.read()
+
+        elif self.language == "en":
             while len(context.split()) < max_context_length:
                 for file in glob.glob(f"{self.haystack_dir}/*.txt"):
                     with open(file, 'r') as f:
@@ -562,6 +613,7 @@ class LLMNeedleHaystackTester:
             self.needle = self.needle_list[ni]
             self.haystack_dir = self.haystack_dir_list[ni]
             self.real_needle  = self.real_ansers_list[ni]
+            self.real_arg2 = self.arg2[ni]
             self.retrieval_question = self.retrieval_question_list[ni]
             if self.print_ongoing_status:
                 self.print_start_test_summary()
