@@ -39,12 +39,6 @@ import glob
 import json
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
 import sys
-sys.path.append("./faiss_attn/")
-from source.modeling_llama import LlamaForCausalLM
-from source.modeling_qwen2 import Qwen2ForCausalLM
-from source.modeling_mixtral import MixtralForCausalLM
-from source.modeling_mistral import MistralForCausalLM
-from source.modeling_phi3 import Phi3ForCausalLM
 import numpy as np
 import argparse
 from rouge_score import rouge_scorer
@@ -190,6 +184,52 @@ class LLMNeedleHaystackTester:
         config = AutoConfig.from_pretrained(model_name)
         self.layer_num, self.head_num = config.num_hidden_layers, config.num_attention_heads
         print(f"layer number: {self.layer_num}, head number {self.head_num}")
+
+        if "a100" in torch.cuda.get_device_name(0).lower():
+            print("loading model on A100 with FIASS i.e. FLASH ATTN 2")
+            self.get_model_fiass()
+        else:
+            print("loading model without FIASS")
+            # Use Huggingface AutoModelForCausalLM
+            if quantize:
+                print("loading quantized model!")
+                from transformers import BitsAndBytesConfig
+                self.bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16
+                    )
+
+                self.model_to_test = AutoModelForCausalLM.from_pretrained(
+                        model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True, quantization_config=self.bnb_config
+                ).eval()
+            else:
+                self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True).eval()
+
+        if 'llama-2-7b-80k' in self.model_version:
+            scaling_factor = 10
+            reset_rope(self.model_to_test, model_max_train_len=81920, scaling_factor=scaling_factor)
+            
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            self.multi_gpus = len(os.environ["CUDA_VISIBLE_DEVICES"])>1
+        else:
+            self.multi_gpus = True
+            
+        self.model_to_test_description = model_name
+        self.evaluation_model = None
+        self.debug='debug'
+        model_name = model_name.split('/')[-1]
+ 
+    
+    def get_model_fiass(self):
+        sys.path.append("./faiss_attn/")
+        from source.modeling_llama import LlamaForCausalLM
+        from source.modeling_qwen2 import Qwen2ForCausalLM
+        from source.modeling_mixtral import MixtralForCausalLM
+        from source.modeling_mistral import MistralForCausalLM
+        from source.modeling_phi3 import Phi3ForCausalLM
+
         if "Qwen" in self.model_version:
             self.model_to_test = Qwen2ForCausalLM.from_pretrained(
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2"
@@ -208,43 +248,13 @@ class LLMNeedleHaystackTester:
                 ).eval()
         elif "Ministral" in self.model_version:
             # Use flash_attention_2 if a100
-            if "a100" in torch.cuda.get_device_name(0).lower():
-                print("Using flash attention 2 without quantization")
-                self.model_to_test = MistralForCausalLM.from_pretrained(
-                        model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
-                    ).eval()
-            else:
-                if quantize:
-                    from transformers import BitsAndBytesConfig
-                    self.bnb_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_use_double_quant=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_compute_dtype=torch.bfloat16
-                    )
-
-                    self.model_to_test = AutoModelForCausalLM.from_pretrained(
-                        model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True, quantization_config=self.bnb_config
-                    ).eval()
-                else:
-                    self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True).eval() 
+            self.model_to_test = MistralForCausalLM.from_pretrained(
+                    model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                ).eval()
         else:
             self.model_to_test = LlamaForCausalLM.from_pretrained(model_name,
                 use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='auto').eval()
             
-        if 'llama-2-7b-80k' in self.model_version:
-            scaling_factor = 10
-            reset_rope(self.model_to_test, model_max_train_len=81920, scaling_factor=scaling_factor)
-            
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            self.multi_gpus = len(os.environ["CUDA_VISIBLE_DEVICES"])>1
-        else:
-            self.multi_gpus = True
-            
-        self.model_to_test_description = model_name
-        self.evaluation_model = None
-        self.debug='debug'
-        model_name = model_name.split('/')[-1]
 
     def logistic(self, x, L=100, x0=50, k=.1):
         if x == 0:
@@ -287,7 +297,12 @@ class LLMNeedleHaystackTester:
         past_kv = q_outputs.past_key_values
         for step_i in range(decode_len):
             inp = inp.view(1, 1)
-            outputs = self.model_to_test(input_ids=inp, past_key_values=past_kv, use_cache=True, output_attentions=True, attn_mode="torch" )
+            
+            if "a100" in torch.cuda.get_device_name(0).lower():
+                outputs = self.model_to_test(input_ids=inp, past_key_values=past_kv, use_cache=True, output_attentions=True, attn_mode="torch" )
+            else:
+                outputs = self.model_to_test(input_ids=inp, past_key_values=past_kv, use_cache=True, output_attentions=True )
+
             past_kv = outputs.past_key_values
             inp = outputs.logits[0, -1].argmax()
             step_token = self.enc.convert_ids_to_tokens(inp.item())
