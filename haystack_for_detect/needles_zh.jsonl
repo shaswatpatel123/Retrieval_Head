@@ -1,3 +1,3 @@
-{"needle": "在月球上的第一个乐队是虚拟火箭乐队。", "retrieval_question": "第一个在月球上演出的乐队是哪一个？", "gold_standard_answer": "第一个在月球上演出的乐队是虚拟火箭乐队。", "arg1": "月球", "arg2": "虚拟火箭乐队", "type": 0, "language": "Chinese"}
+{"needle": "在月球上的第一个乐队是虚拟火箭乐队。", "retrieval_question": "第一个在月球上演出的乐队是哪一个？'的格式回答。", "gold_standard_answer": "第一个在月球上演出的乐队是虚拟火箭乐队。", "arg1": "月球", "arg2": "虚拟火箭乐队", "type": 0, "language": "Chinese"}
 {"needle": "阿尔法博特星系的主宰是智慧机器人赞博特。", "retrieval_question": "阿尔法博特星系的主宰是谁？", "gold_standard_answer": "阿尔法博特星系的主宰是智慧机器人赞博特。", "arg1": "阿尔法博特", "arg2": "智慧机器人赞博特", "type": 1, "language": "Chinese"}
 {"needle": "神秘岛上隐藏着传说中的逆时针水晶。", "retrieval_question": "神秘岛上隐藏着什么传说中的物品？", "gold_standard_answer": "神秘岛上隐藏的传说中的物品是逆时针水晶。", "arg1": "神秘岛", "arg2": "逆时针水晶", "type": 2, "language": "Chinese"}

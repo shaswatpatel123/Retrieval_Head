@@ -49,8 +49,7 @@ from collections import defaultdict
 import time
 import torch
 from tqdm import tqdm
-
-
+import wandb
 
 def reset_rope(model, model_max_train_len, scaling_factor):
     for l in model.model.layers:
@@ -89,7 +88,8 @@ class LLMNeedleHaystackTester:
                 print_ongoing_status = True,
                 quantize=False,
                 language="en",
-                h_language=None
+                h_language=None,
+                wandb_logging=False
                 ):
         """        
         :param needle: The needle to be found in the haystack. Default is None.
@@ -119,6 +119,17 @@ class LLMNeedleHaystackTester:
         :param language: which language NIAH to setup
         :param h_language: which haystack language to setup (if different from needle)
         """
+        if wandb_logging:
+            self.wandb_run = wandb.init()
+            self.wandb_run.log({'model_name': model_name,
+                'language': language,
+                'h_language': h_language,
+                'quantize': quantize,
+                'context_lengths_max': context_lengths_max,
+                'document_depth_percent_max': document_depth_percent_max
+            })
+            self.wandb_logging = wandb_logging
+
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
         self.language = language
@@ -185,6 +196,13 @@ class LLMNeedleHaystackTester:
         self.layer_num, self.head_num = config.num_hidden_layers, config.num_attention_heads
         print(f"layer number: {self.layer_num}, head number {self.head_num}")
 
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            self.multi_gpus = len(os.environ["CUDA_VISIBLE_DEVICES"])>1
+            if len(os.environ["CUDA_VISIBLE_DEVICES"])>1:
+                print("Multi GPU setup!")
+        else:
+            self.multi_gpus = True
+
         if "a100" in torch.cuda.get_device_name(0).lower():
             print("loading model on A100 with FIASS i.e. FLASH ATTN 2")
             self.get_model_fiass()
@@ -200,22 +218,23 @@ class LLMNeedleHaystackTester:
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_compute_dtype=torch.bfloat16
                     )
-
+                
+                # device_map = "balanced" to enable Model Parallelism
                 self.model_to_test = AutoModelForCausalLM.from_pretrained(
-                        model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True, quantization_config=self.bnb_config
+                        model_name,torch_dtype="auto",device_map='balanced', trust_remote_code=True, quantization_config=self.bnb_config
                 ).eval()
             else:
-                self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='auto', trust_remote_code=True).eval()
+                self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='balanced', trust_remote_code=True).eval()
 
         if 'llama-2-7b-80k' in self.model_version:
             scaling_factor = 10
             reset_rope(self.model_to_test, model_max_train_len=81920, scaling_factor=scaling_factor)
             
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            self.multi_gpus = len(os.environ["CUDA_VISIBLE_DEVICES"])>1
-        else:
-            self.multi_gpus = True
             
+        print("Model device map: ", self.model_to_test.hf_device_map)
+        if self.wandb_logging:
+            self.wandb_run.log( self.model_to_test.hf_device_map )
+
         self.model_to_test_description = model_name
         self.evaluation_model = None
         self.debug='debug'
@@ -247,7 +266,6 @@ class LLMNeedleHaystackTester:
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         elif "Ministral" in self.model_version:
-            # Use flash_attention_2 if a100
             self.model_to_test = MistralForCausalLM.from_pretrained(
                     model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
@@ -417,6 +435,10 @@ class LLMNeedleHaystackTester:
             'test_timestamp_utc' : datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S%z')
         }
 
+        if self.wandb_logging:
+            self.wandb_run.log(results)
+        
+
         self.testing_results.append(results)
 
         if self.print_ongoing_status:
@@ -448,7 +470,7 @@ class LLMNeedleHaystackTester:
                 os.makedirs(f'results/graph/{self.language}{self.h_language}/{self.model_version}')
             
             # Save the result to file for retesting
-            p = f'results/graph/{self.language}{self.h_language}/{self.model_version}/{context_file_location}_results.json'
+            p = f'results/graph/{self.language}{self.h_language}/{self.model_version}/{context_file_location}_needle{self.ni}_results.json'
             print("Writing at %s" % p)
             with open(p, 'w') as f:
                 json.dump(results, f)
@@ -614,9 +636,50 @@ class LLMNeedleHaystackTester:
         print (f"- Needle: {self.needle.strip()}")
         print ("\n\n")
 
+    def wandb_plot(self):
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'w') as f:
+            head_list = json.load( f )
+
+        head_score_list = [([int(ll) for ll in l[0].split("-")],np.mean(l[1])) for l in head_list.items()]
+        head_score_list = sorted(head_score_list, key=lambda x: x[1], reverse=True)
+        top_retrieval_heads = [[l[0],  round(np.mean(l[1]), 2)] for l in head_score_list][:10]
+
+        def get_color(score):
+            if score >= 0.5:
+                return '#FF4C4C'  # red
+            elif score >= 0.1:
+                return '#FFA07A'  # light coral / salmon
+            elif score > 0.0:
+                return '#4682B4'  # steel blue
+            else:
+                return '#ADD8E6'  # light blue
+
+        labels = [f'{pair[0]}-{pair[1]}' for pair, _ in top_retrieval_heads]
+        scores = [score for _, score in top_retrieval_heads]
+
+        colors = [get_color(score) for score in scores]
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        wedges, texts, autotexts = ax.pie(
+            scores,
+            labels=labels,
+            autopct='%1.1f%%',
+            startangle=90,
+            colors=colors,
+            wedgeprops=dict(width=0.4)
+        )
+        centre_circle = plt.Circle((0, 0), 0.70, fc='white')
+        fig.gca().add_artist(centre_circle)
+        ax.axis('equal')
+        plt.title(f"Top Retrieval Heads {self.language} {self.h_language} {self.model_version}")
+        self.wandb_run.log({f"retrieval_head_{self.model_version}_{self.language}_{self.h_language}": wandb.Image(fig)})
+        plt.close(fig)
+
+
     def start_test(self, args):
         for ni in range(len(self.needle_list)):
             self.needle = self.needle_list[ni]
+            self.ni = ni
             self.haystack_dir = self.haystack_dir_list[ni]
             self.real_needle  = self.real_ansers_list[ni]
             self.real_arg2 = self.arg2[ni]
@@ -633,6 +696,8 @@ class LLMNeedleHaystackTester:
         with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'w') as f:
             json.dump(self.head_counter, f)
 
+        self.wandb_plot()
+
 
 if __name__ == "__main__":
     # Tons of defaults set, check out the LLMNeedleHaystackTester's init for more info
@@ -646,6 +711,8 @@ if __name__ == "__main__":
     parser.add_argument('--quantize', action='store_true', help='Enable model quantization')
     parser.add_argument('--language', type=str, default="en", help="Specify the language to test")
     parser.add_argument('-hl','--haystack_language', type=str, help="[OPTIONAL] Specify haystack language, if different from needle") 
+    parser.add_argument('--wandb', action='store_true', help='Enable wandb logging')
+
     args = parser.parse_args()
    
     model_name = args.model_path
@@ -659,7 +726,8 @@ if __name__ == "__main__":
                                  context_lengths_max=args.e_len,
                                  quantize=args.quantize,
                                  language=args.language,
-                                 h_language=args.haystack_language
+                                 h_language=args.haystack_language,
+                                 wandb_logging=args.wandb
                                  )
 
     ht.start_test(args)
