@@ -50,6 +50,8 @@ import time
 import torch
 from tqdm import tqdm
 import wandb
+from matplotlib import pyplot as plt
+import matplotlib.patches as mpatches
 
 def reset_rope(model, model_max_train_len, scaling_factor):
     for l in model.model.layers:
@@ -637,12 +639,12 @@ class LLMNeedleHaystackTester:
         print ("\n\n")
 
     def wandb_plot(self):
-        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'w') as f:
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'r') as f:
             head_list = json.load( f )
 
         head_score_list = [([int(ll) for ll in l[0].split("-")],np.mean(l[1])) for l in head_list.items()]
         head_score_list = sorted(head_score_list, key=lambda x: x[1], reverse=True)
-        top_retrieval_heads = [[l[0],  round(np.mean(l[1]), 2)] for l in head_score_list][:10]
+        top_retrieval_heads = [[l[0],  round(np.mean(l[1]), 2)] for l in head_score_list]
 
         def get_color(score):
             if score >= 0.5:
@@ -654,24 +656,39 @@ class LLMNeedleHaystackTester:
             else:
                 return '#ADD8E6'  # light blue
 
-        labels = [f'{pair[0]}-{pair[1]}' for pair, _ in top_retrieval_heads]
-        scores = [score for _, score in top_retrieval_heads]
+        color_grouped_scores = defaultdict(float)
+        for score in scores:
+            color_grouped_scores[get_color(score)] += score
 
-        colors = [get_color(score) for score in scores]
+        sorted_groups = sorted(color_grouped_scores.items(), key=lambda x: x[1], reverse=True)
 
-        fig, ax = plt.subplots(figsize=(6, 6))
+        grouped_scores = [v for _, v in sorted_groups]
+        grouped_colors = [c for c, _ in sorted_groups]
+
+        color_meanings = {
+            '#FF4C4C': '≥ 0.5',
+            '#FFA07A': '0.1 – 0.5',
+            '#4682B4': '0.0 – 0.1',
+            '#ADD8E6': '0'
+        }
+
+        legend_handles = [mpatches.Patch(color=color, label=color_meanings[color]) for color in grouped_colors]
+
+        fig, ax = plt.subplots(figsize=(16, 16))
         wedges, texts, autotexts = ax.pie(
-            scores,
-            labels=labels,
+            grouped_scores,
+            labels=None,  # No labels
             autopct='%1.1f%%',
             startangle=90,
-            colors=colors,
+            colors=grouped_colors,
             wedgeprops=dict(width=0.4)
         )
+
         centre_circle = plt.Circle((0, 0), 0.70, fc='white')
         fig.gca().add_artist(centre_circle)
         ax.axis('equal')
-        plt.title(f"Top Retrieval Heads {self.language} {self.h_language} {self.model_version}")
+        plt.title(f"Top Retrieval Head Colors {self.language} {self.h_language} {self.model_version}")
+        plt.legend(handles=legend_handles, title="Score Range", loc="upper right")
         self.wandb_run.log({f"retrieval_head_{self.model_version}_{self.language}_{self.h_language}": wandb.Image(fig)})
         plt.close(fig)
 
