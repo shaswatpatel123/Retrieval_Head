@@ -122,6 +122,7 @@ class LLMNeedleHaystackTester:
         :param language: which language NIAH to setup
         :param h_language: which haystack language to setup (if different from needle)
         """
+        self.wandb_logging = wandb_logging
         if wandb_logging:
             self.wandb_run = wandb.init()
             self.wandb_run.log({'model_name': model_name,
@@ -131,7 +132,6 @@ class LLMNeedleHaystackTester:
                 'context_lengths_max': context_lengths_max,
                 'document_depth_percent_max': document_depth_percent_max
             })
-            self.wandb_logging = wandb_logging
 
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
