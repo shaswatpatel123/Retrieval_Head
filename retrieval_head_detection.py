@@ -52,6 +52,7 @@ from tqdm import tqdm
 import wandb
 from matplotlib import pyplot as plt
 import matplotlib.patches as mpatches
+from transformers import BitsAndBytesConfig
 
 def reset_rope(model, model_max_train_len, scaling_factor):
     for l in model.model.layers:
@@ -213,7 +214,6 @@ class LLMNeedleHaystackTester:
             # Use Huggingface AutoModelForCausalLM
             if quantize:
                 print("loading quantized model!")
-                from transformers import BitsAndBytesConfig
                 self.bnb_config = BitsAndBytesConfig(
                         load_in_4bit=True,
                         bnb_4bit_use_double_quant=True,
@@ -223,7 +223,7 @@ class LLMNeedleHaystackTester:
                 
                 # device_map = "balanced" to enable Model Parallelism
                 self.model_to_test = AutoModelForCausalLM.from_pretrained(
-                        model_name,torch_dtype="auto",device_map='balanced', trust_remote_code=True, quantization_config=self.bnb_config
+                        model_name,device_map='balanced', trust_remote_code=True, quantization_config=self.bnb_config
                 ).eval()
             else:
                 self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='balanced', trust_remote_code=True).eval()
@@ -645,6 +645,8 @@ class LLMNeedleHaystackTester:
         head_score_list = [([int(ll) for ll in l[0].split("-")],np.mean(l[1])) for l in head_list.items()]
         head_score_list = sorted(head_score_list, key=lambda x: x[1], reverse=True)
         top_retrieval_heads = [[l[0],  round(np.mean(l[1]), 2)] for l in head_score_list]
+
+        scores = [ i[1] for i in top_retrieval_heads ]
 
         def get_color(score):
             if score >= 0.5:
