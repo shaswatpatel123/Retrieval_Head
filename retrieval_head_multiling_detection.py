@@ -142,17 +142,18 @@ class LLMNeedleHaystackTester:
         else:
             self.h_language = h_language
 
-        needles_and_stacks = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.language}.jsonl")]
+        query_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.language}.jsonl")]
+        needle_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.h_language}.jsonl")]
         
-        self.needle_list = [l["needle"] for l in needles_and_stacks]
+        self.needle_list = [l["needle"] for l in needle_stack]
         
-        self.retrieval_question_list = [l["retrieval_question"] for l in needles_and_stacks]
+        self.retrieval_question_list = [l["retrieval_question"] for l in query_stack]
         
-        self.real_ansers_list = [l["gold_standard_answer"] for l in needles_and_stacks]
+        self.real_ansers_list = [l["gold_standard_answer"] for l in query_stack]
         
         self.haystack_dir_list = [f"{haystack_dir}/{self.h_language}" for i in range(1, 4)]
 
-        self.arg2 = [l["arg2"] for l in needles_and_stacks]
+        self.arg2 = [l["arg2"] for l in query_stack]
         
         self.results_version = results_version
         self.num_concurrent_requests = num_concurrent_requests
@@ -453,15 +454,13 @@ class LLMNeedleHaystackTester:
             for layer_idx in range(self.layer_num):
                 for head_idx in range(self.head_num):
                     retrieval_score[layer_idx][head_idx][0] /= (self.needle_end - self.needle_start)
-
-
-
        ## if recall > 50, we determine this retrieval succeed and update the retrieval score
         if score > 50 or score2 >= 99:
             self.retrieval_head_accumulate(retrieval_score)
             head_score = [(i[0], np.mean(i[1])) for i in self.head_counter.items()]
             head_score = sorted(head_score, key=lambda x:x[1], reverse=True)
             print([[i[0]] for i in head_score][:20])
+        
         
         if score <= 50 and score2 >= 99:
             # Make logging easy
