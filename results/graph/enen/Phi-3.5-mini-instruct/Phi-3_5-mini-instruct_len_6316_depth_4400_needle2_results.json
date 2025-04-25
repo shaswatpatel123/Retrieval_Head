@@ -1,0 +1,1 @@
+{"model": "microsoft/Phi-3.5-mini-instruct", "context_length": 6316, "depth_percent": 44.0, "version": 1, "needle": "Hidden on Mysterious Island is the legendary Counterclockwise Crystal.", "model_response": "The legendary Counterclockwise Crystal.", "score": 100.0, "test_duration_seconds": 2.0211660861968994, "test_timestamp_utc": "2025-04-24 18:59:52+0000"}

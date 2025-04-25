@@ -1,0 +1,1 @@
+{"model": "microsoft/Phi-3.5-mini-instruct", "context_length": 18947, "depth_percent": 22.0, "version": 1, "needle": "The first band to play on the Moon was the Virtual Rocket Band.", "model_response": "The Virtual Rocket Band.", "score": 100.0, "test_duration_seconds": 3.3409221172332764, "test_timestamp_utc": "2025-04-24 18:38:29+0000"}

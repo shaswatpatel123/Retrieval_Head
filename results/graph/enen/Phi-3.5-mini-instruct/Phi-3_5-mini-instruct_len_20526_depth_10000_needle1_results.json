@@ -1,0 +1,1 @@
+{"model": "microsoft/Phi-3.5-mini-instruct", "context_length": 20526, "depth_percent": 100.0, "version": 1, "needle": "The ruler of the Alpha Bot star system is Intelligent Robot Zambot.", "model_response": "Intelligent Robot Zambot.", "score": 100.0, "test_duration_seconds": 4.267040491104126, "test_timestamp_utc": "2025-04-24 18:52:08+0000"}

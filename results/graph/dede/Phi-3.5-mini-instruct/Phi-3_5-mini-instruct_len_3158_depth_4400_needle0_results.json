@@ -1,0 +1,1 @@
+{"model": "microsoft/Phi-3.5-mini-instruct", "context_length": 3158, "depth_percent": 44.0, "version": 1, "needle": "Die erste Band, die auf dem Mond spielte, war die Virtual Rocket Band.", "model_response": "Die Virtual Rocket Band trat als erste auf dem Mond auf.", "score": 50.0, "test_duration_seconds": 1.9052009582519531, "test_timestamp_utc": "2025-04-24 20:16:12+0000"}

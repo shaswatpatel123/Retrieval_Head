@@ -253,27 +253,27 @@ class LLMNeedleHaystackTester:
 
         if "Qwen" in self.model_version:
             self.model_to_test = Qwen2ForCausalLM.from_pretrained(
-                    model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2"
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2"
                 ).eval()
         elif "Mixtral" in self.model_version:
             self.model_to_test = MixtralForCausalLM.from_pretrained(
-                    model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         elif "Mistral" in self.model_version:
             self.model_to_test = MistralForCausalLM.from_pretrained(
-                    model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         elif "Phi" in self.model_version:
             self.model_to_test = Phi3ForCausalLM.from_pretrained(
-                    model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         elif "Ministral" in self.model_version:
             self.model_to_test = MistralForCausalLM.from_pretrained(
-                    model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
                 ).eval()
         else:
             self.model_to_test = LlamaForCausalLM.from_pretrained(model_name,
-                use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='auto').eval()
+                use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='balanced').eval()
             
 
     def logistic(self, x, L=100, x0=50, k=.1):
@@ -304,7 +304,7 @@ class LLMNeedleHaystackTester:
                 values, idx = attention_maxtrix[layer_idx][0][head_idx][-1].topk(topk)
                 for v, i in zip(values, idx):
                     if  self.needle_start <= i < self.needle_end and inp.item()==self.prompt_ids[i].item():
-                        retrieval_score[layer_idx][head_idx][0] += 1/(self.needle_end - self.needle_start)
+                        retrieval_score[layer_idx][head_idx][0] += 1
                         retrieval_score[layer_idx][head_idx][1] += step_token
                         break
     def retrieval_head_accumulate(self, retrieval_score):
@@ -347,13 +347,38 @@ class LLMNeedleHaystackTester:
         # Checks to see if you've already checked a length/percent/version.
         # This helps if the program stop running and you want to restart later
         # Go generate the required length context and place your needle statement in
+        enforce_language = True
         context = self.generate_context(context_length, depth_percent)
         if self.language == "en":
-            question = f"Based on the content of the book, Question: {self.retrieval_question}\nAnswer:"
+            if enforce_language:
+                ans_format = "Answer in English"
+            else:
+                ans_format = "Answer"
+            question = f"Based on the content of the book, Question: {self.retrieval_question}\n{ans_format}:"
+
         elif self.language == "de":
-            question = f"Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\nAntwort:"
+            if enforce_language:
+                ans_format = "Antwort auf Deutsch"
+            else:
+                ans_format = "Antwort"
+            question = f"Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\n{ans_format}:"
+
         elif self.language == "zh":
-            question = f"根据书本内容，提出问: {self.retrieval_question}\nAnswer:"
+            if enforce_language:
+                ans_format = "用中文囔"
+            else:
+                ans_format = "回答"
+            question = f"根据书本内容，提出问: {self.retrieval_question}\n{ans_format}:"
+            # print(question)
+
+        elif self.language == "ar":
+            if enforce_language:
+                ans_format = "ﺎﺠﺎﺑﺓ ﺎﻠﻟﻐﺔ ﺎﻠﻋﺮﺑﻴﺔ"
+            else:
+                ans_format = "ﺍﻺﺟﺎﺑﺔ"
+            
+            question = f"ﺎﺴﺘﻧﺍﺩًﺍ ﺈﻟﻯ ﻢﺤﺗﻭﻯ ﺎﻠﻜﺗﺎﺑ، ﺎﻠﺳﺅﺎﻟ: {self.retrieval_question}\n{ans_format}:"
+            # print(question)
 
         '''
         if self.model_version=="Qwen1.5-14B-Chat":
@@ -364,21 +389,24 @@ class LLMNeedleHaystackTester:
         if self.model_version in ["Mistral-7B-Instruct-v0.2", "Qwen1.5-14B-Chat", "Ministral-8B-Instruct-2410"]:
             if self.language == "zh":
                 prompt = [
-                    {"role": "user", "content": f"<book>{context}</book>根据书中内容，提出问题：{self.retrieval_question}\n回答:"},
+                    {"role": "user", "content": f"<book>{context}</book>根据书中内容，提出问题：{self.retrieval_question}\n{ans_format}:"},
                 ]
             elif self.language == "de":
                 prompt = [
-                    {"role": "user", "content": f"<book>{context}</book>Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\nAntwort:"},                                                                                                                             ]
+                    {"role": "user", "content": f"<book>{context}</book>Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\n{ans_format}:"},                                                                                                                             ]
+            elif self.language == "ar":
+                prompt = [
+                        {"role": "user", "content": f"<book>{context}</book>\nﺎﺴﺘﻧﺍﺩًﺍ ﺈﻟﻯ ﻢﺤﺗﻭﻯ ﺎﻠﻜﺗﺎﺑ، ﺎﻠﺳﺅﺎﻟ: {self.retrieval_question}\n{ans_format}:"}
+                ]
             else:
                 prompt = [
-                    {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\nAnswer:"},
+                    {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\n{ans_format}:"},
                 ]
 
             input_ids = self.enc.apply_chat_template(conversation=prompt, tokenize=True,  add_generation_prompt=True, return_tensors='pt')
         else:
             input_context = context + question
             input_ids = self.enc(input_context , return_tensors="pt")['input_ids']
-        
         # Prepare your message to send to the model you're going to evaluate
         test_start_time = time.time()
         self.prompt_ids = input_ids[0, :]
@@ -414,7 +442,13 @@ class LLMNeedleHaystackTester:
                 score2 = 0
 
 
-        ## if recall > 50, we determine this retrieval succeed and update the retrieval score
+        if score <= 50 and score2 >= 99:
+            #  (self.needle_end - self.needle_start)
+            self.needle_start, self.needle_end = self.find_needle_idx(self.real_arg2)
+            for layer_idx in range(self.layer_num):
+                for head_idx in range(self.head_num):
+                    retrieval_score[layer_idx][head_idx][0] /= (self.needle_end - self.needle_start)
+       ## if recall > 50, we determine this retrieval succeed and update the retrieval score
         if score > 50 or score2 >= 99:
             self.retrieval_head_accumulate(retrieval_score)
             head_score = [(i[0], np.mean(i[1])) for i in self.head_counter.items()]
@@ -660,7 +694,7 @@ class LLMNeedleHaystackTester:
 
         color_grouped_scores = defaultdict(float)
         for score in scores:
-            color_grouped_scores[get_color(score)] += score
+            color_grouped_scores[get_color(score)] += 1
 
         sorted_groups = sorted(color_grouped_scores.items(), key=lambda x: x[1], reverse=True)
 
