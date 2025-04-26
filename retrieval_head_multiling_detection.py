@@ -443,23 +443,24 @@ class LLMNeedleHaystackTester:
                 score2 = 0
 
 
+        print("Calculating retrieval_score")
         if score <= 50 and score2 >= 99:
             #  (self.needle_end - self.needle_start)
-            self.needle_start, self.needle_end = self.find_needle_idx(self.real_arg2)
+            needle_start, needle_end = self.find_needle_idx(self.real_arg2)
             for layer_idx in range(self.layer_num):
                 for head_idx in range(self.head_num):
-                    retrieval_score[layer_idx][head_idx][0] /= (self.needle_end - self.needle_start)
+                    retrieval_score[layer_idx][head_idx][0] /= ((needle_end - needle_start) + 1)
         elif score > 50:
-            self.needle_start, self.needle_end = self.find_needle_idx(self.real_needle)
+            needle_start, needle_end = self.find_needle_idx(self.real_needle)
             for layer_idx in range(self.layer_num):
                 for head_idx in range(self.head_num):
-                    retrieval_score[layer_idx][head_idx][0] /= (self.needle_end - self.needle_start)
+                    retrieval_score[layer_idx][head_idx][0] /= ((needle_end - needle_start) + 1)
        ## if recall > 50, we determine this retrieval succeed and update the retrieval score
         if score > 50 or score2 >= 99:
             self.retrieval_head_accumulate(retrieval_score)
             head_score = [(i[0], np.mean(i[1])) for i in self.head_counter.items()]
             head_score = sorted(head_score, key=lambda x:x[1], reverse=True)
-            print([[i[0]] for i in head_score][:20])
+            print([i for i in head_score][:20])
         
         
         if score <= 50 and score2 >= 99:
