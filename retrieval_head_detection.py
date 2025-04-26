@@ -405,7 +405,7 @@ class LLMNeedleHaystackTester:
 
             input_ids = self.enc.apply_chat_template(conversation=prompt, tokenize=True,  add_generation_prompt=True, return_tensors='pt')
         else:
-            input_context = context + question
+            input_context = context + " " + question
             input_ids = self.enc(input_context , return_tensors="pt")['input_ids']
         # Prepare your message to send to the model you're going to evaluate
         test_start_time = time.time()
