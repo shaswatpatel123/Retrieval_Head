@@ -412,7 +412,7 @@ class LLMNeedleHaystackTester:
         self.prompt_ids = input_ids[0, :]
         if not self.multi_gpus:
             input_ids = input_ids.to(self.model_to_test.device)
-        self.needle_start, self.needle_end = self.find_needle_idx(self.real_needle)
+        self.needle_start, self.needle_end = self.find_needle_idx(self.needle)
         with torch.no_grad():
             q_outputs = self.model_to_test(input_ids=input_ids[:,:-1], use_cache=True, return_dict=True)
             output, retrieval_score  = self.decode(q_outputs, input_ids[:,-1], 50)
@@ -450,7 +450,7 @@ class LLMNeedleHaystackTester:
                 for head_idx in range(self.head_num):
                     retrieval_score[layer_idx][head_idx][0] /= ((needle_end - needle_start) + 1)
         elif score > 50:
-            needle_start, needle_end = self.find_needle_idx(self.real_needle)
+            needle_start, needle_end = self.find_needle_idx(self.needle)
             for layer_idx in range(self.layer_num):
                 for head_idx in range(self.head_num):
                     retrieval_score[layer_idx][head_idx][0] /= ((needle_end - needle_start) + 1)
