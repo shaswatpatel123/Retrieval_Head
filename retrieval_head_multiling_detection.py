@@ -141,19 +141,22 @@ class LLMNeedleHaystackTester:
             self.h_language = language
         else:
             self.h_language = h_language
-
+        """
+            Query + Needle is in English, Haystack: zh, de and answer is in Haystack language!
+        """
         query_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.language}.jsonl")]
-        needle_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.h_language}.jsonl")]
+        needle_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.language}.jsonl")]
+        gold_standard_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.h_language}.jsonl")]
         
         self.needle_list = [l["needle"] for l in needle_stack]
         
         self.retrieval_question_list = [l["retrieval_question"] for l in query_stack]
         
-        self.real_ansers_list = [l["gold_standard_answer"] for l in query_stack]
+        self.real_ansers_list = [l["gold_standard_answer"] for l in gold_standard_stack]
         
-        self.haystack_dir_list = [f"{haystack_dir}/{self.h_language}" for i in range(1, 4)]
+        self.haystack_dir_list = [f"{haystack_dir}/{self.language}" for i in range(1, 4)]
 
-        self.arg2 = [l["arg2"] for l in query_stack]
+        self.arg2 = [l["arg2"] for l in gold_standard_stack]
         
         self.results_version = results_version
         self.num_concurrent_requests = num_concurrent_requests
@@ -304,7 +307,7 @@ class LLMNeedleHaystackTester:
             for head_idx in range(self.head_num):
                 values, idx = attention_maxtrix[layer_idx][0][head_idx][-1].topk(topk)
                 for v, i in zip(values, idx):
-                    if  self.needle_start <= i < self.needle_end and inp.item()==self.prompt_ids[i].item():
+                    if  self.needle_start <= i < self.needle_end and inp.item()==self.prompt_ids_2[i].item():
                         retrieval_score[layer_idx][head_idx][0] += 1
                         retrieval_score[layer_idx][head_idx][1] += step_token
                         break
@@ -350,36 +353,43 @@ class LLMNeedleHaystackTester:
         # Go generate the required length context and place your needle statement in
         enforce_language = True
         context = self.generate_context(context_length, depth_percent)
-        if self.language == "en":
-            if enforce_language:
-                ans_format = "Answer in English"
-            else:
-                ans_format = "Answer"
-            question = f"Based on the content of the book, Question: {self.retrieval_question}\n{ans_format}:"
+        context_2 = self.generate_context_2(context_length, depth_percent)
+        # if self.h_language == "en":
+        #     if enforce_language:
+        #         ans_format = "Answer in English"
+        #     else:
+        #         ans_format = "Answer"
+        #     question = f"Based on the content of the book, Question: {self.retrieval_question}\n{ans_format}:"
 
-        elif self.language == "de":
-            if enforce_language:
-                ans_format = "Antwort auf Deutsch"
-            else:
-                ans_format = "Antwort"
-            question = f"Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\n{ans_format}:"
+        # elif self.h_language == "de":
+        #     if enforce_language:
+        #         ans_format = "Antwort auf Deutsch"
+        #     else:
+        #         ans_format = "Antwort"
+        #     question = f"Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\n{ans_format}:"
 
-        elif self.language == "zh":
-            if enforce_language:
-                ans_format = "用中文囔"
-            else:
-                ans_format = "回答"
-            question = f"根据书本内容，提出问: {self.retrieval_question}\n{ans_format}:"
-            # print(question)
+        # elif self.h_language == "zh":
+        #     if enforce_language:
+        #         ans_format = "用中文囔"
+        #     else:
+        #         ans_format = "回答"
+        #     question = f"根据书本内容，提出问: {self.retrieval_question}\n{ans_format}:"
+        #     # print(question)
 
-        elif self.language == "ar":
-            if enforce_language:
-                ans_format = "ﺎﺠﺎﺑﺓ ﺎﻠﻟﻐﺔ ﺎﻠﻋﺮﺑﻴﺔ"
-            else:
-                ans_format = "ﺍﻺﺟﺎﺑﺔ"
-            
-            question = f"ﺎﺴﺘﻧﺍﺩًﺍ ﺈﻟﻯ ﻢﺤﺗﻭﻯ ﺎﻠﻜﺗﺎﺑ، ﺎﻠﺳﺅﺎﻟ: {self.retrieval_question}\n{ans_format}:"
-            # print(question)
+        # elif self.h_language == "ar":
+        #     if enforce_language:
+        #         ans_format = "ﺎﺠﺎﺑﺓ ﺎﻠﻟﻐﺔ ﺎﻠﻋﺮﺑﻴﺔ"
+        #     else:
+        #         ans_format = "ﺍﻺﺟﺎﺑﺔ"
+        #    question = f"ﺎﺴﺘﻧﺍﺩًﺍ ﺈﻟﻯ ﻢﺤﺗﻭﻯ ﺎﻠﻜﺗﺎﺑ، ﺎﻠﺳﺅﺎﻟ: {self.retrieval_question}\n{ans_format}:"
+        #    print(question)
+
+        if enforce_language:
+            ans_format = "Answer in " + "Chinese" if self.h_language == "zh" else "German"
+        else:
+            ans_format = "Answer"
+        
+        question = f"Based on the content of the book, Question: {self.retrieval_question}\n{ans_format}:" 
 
         '''
         if self.model_version=="Qwen1.5-14B-Chat":
@@ -407,10 +417,14 @@ class LLMNeedleHaystackTester:
             input_ids = self.enc.apply_chat_template(conversation=prompt, tokenize=True,  add_generation_prompt=True, return_tensors='pt')
         else:
             input_context = context + question
+            input_context_2 = context_2 + question
             input_ids = self.enc(input_context , return_tensors="pt")['input_ids']
+            input_ids_2 = self.enc(input_context_2 , return_tensors="pt")['input_ids']
+
         # Prepare your message to send to the model you're going to evaluate
         test_start_time = time.time()
         self.prompt_ids = input_ids[0, :]
+        self.prompt_ids_2 = input_ids_2[0, :]
         if not self.multi_gpus:
             input_ids = input_ids.to(self.model_to_test.device)
         self.needle_start, self.needle_end = self.find_needle_idx(self.needle)
@@ -423,7 +437,7 @@ class LLMNeedleHaystackTester:
         test_elapsed_time = test_end_time - test_start_time
         
         score2 = 0
-        if self.language == "en" or self.language == "de":
+        if self.h_language == "en" or self.h_language == "de" or self.h_language == "ar":
             score = scorer.score(self.real_needle, response)['rouge1'].recall*100
             score2 = scorer.score(self.real_arg2, response)['rouge1'].recall*100
         else:
@@ -555,6 +569,19 @@ class LLMNeedleHaystackTester:
 
         return context
     
+    def generate_context_2(self, context_length, depth_percent):
+        # Load up tiktoken so we navigate tokens more easily
+
+        # Get your Paul Graham files loaded into a string
+        context = self.read_context_files()
+
+        # Truncate the Paul Graham essays to the context length you desire
+        context = self.encode_and_trim(context, context_length)
+
+        # Insert your random statement according to your depth percent
+        context = self.insert_needle_2(context, depth_percent, context_length)
+
+        return context
     def encode_text_to_tokens(self, text):
         if self.model_provider in ["OpenAI", "LLaMA", "Mistral", "GLM"]:
             return self.enc.encode(text)
@@ -566,6 +593,49 @@ class LLMNeedleHaystackTester:
     
     def insert_needle(self, context, depth_percent, context_length):
         tokens_needle = self.encode_text_to_tokens(self.needle)
+        tokens_context = self.encode_text_to_tokens(context)
+
+        # Reducing the context length by 150 buffer. This is to account for system message, the user question, and response.
+        context_length -= self.final_context_length_buffer
+
+        # If your context + needle are longer than the context length (which it will be), then reduce tokens from the context by the needle length
+        if len(tokens_context) + len(tokens_needle) > context_length:
+            tokens_context = tokens_context[:context_length - len(tokens_needle)]
+
+        if depth_percent == 100:
+            # If your depth percent is 100 (which means your needle is the last thing in the doc), throw it at the end
+            tokens_new_context = tokens_context + tokens_needle
+        else:
+            # Go get the position (in terms of tokens) to insert your needle
+            insertion_point = int(len(tokens_context) * (depth_percent / 100))
+            # import ipdb; ipdb.set_trace()
+
+            # tokens_new_context represents the tokens before the needle
+            tokens_new_context = tokens_context[:insertion_point]
+
+            # We want to make sure that we place our needle at a sentence break so we first see what token a '.' is
+            if(self.model_provider in ["LLaMA", "LongLLaMA"]): period_tokens = [29889, 869]
+            elif(self.model_provider == "Mistral"): period_tokens = [842, 28723]
+            elif(self.model_provider == "GLM"): period_tokens = [918, 30930]
+            else: period_tokens = self.encode_text_to_tokens('.')
+            
+            # Then we iteration backwards until we find the first period
+            while tokens_new_context and tokens_new_context[-1] not in period_tokens:
+                insertion_point -= 1
+                tokens_new_context = tokens_context[:insertion_point]
+
+            print("insertion at %d" % insertion_point)
+            # Once we get there, then add in your needle, and stick the rest of your context in on the other end.
+            # Now we have a needle in a haystack
+            tokens_new_context += tokens_needle + tokens_context[insertion_point:]
+
+        # Convert back to a string and return it
+        new_context = self.decode_tokens(tokens_new_context)
+        return new_context
+
+
+    def insert_needle_2(self, context, depth_percent, context_length):
+        tokens_needle = self.encode_text_to_tokens(self.real_needle)
         tokens_context = self.encode_text_to_tokens(context)
 
         # Reducing the context length by 150 buffer. This is to account for system message, the user question, and response.
@@ -681,7 +751,7 @@ class LLMNeedleHaystackTester:
         print ("\n\n")
 
     def wandb_plot(self):
-        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'r') as f:
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}_2.json", 'r') as f:
             head_list = json.load( f )
 
         head_score_list = [([int(ll) for ll in l[0].split("-")],np.mean(l[1])) for l in head_list.items()]
@@ -749,12 +819,12 @@ class LLMNeedleHaystackTester:
                 self.print_start_test_summary()
             self.run_test(args)
         os.makedirs(f"head_score/{self.language}{self.h_language}/", exist_ok=True)
-        if os.path.exists(f"head_score/{self.language}{self.h_language}/{self.model_version}.json"):
-            with open(f"./head_score/{self.language}{self.h_language}/{self.model_version}.json", "r") as file:
+        if os.path.exists(f"head_score/{self.language}{self.h_language}/{self.model_version}_2.json"):
+            with open(f"./head_score/{self.language}{self.h_language}/{self.model_version}_2.json", "r") as file:
                 head_counter = json.loads(file.readline())
             for k,v in head_counter.items():
                 self.head_counter[k] += v
-        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", 'w') as f:
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}_2.json", 'w') as f:
             json.dump(self.head_counter, f)
 
         self.wandb_plot()

@@ -422,7 +422,7 @@ class LLMNeedleHaystackTester:
         test_elapsed_time = test_end_time - test_start_time
         
         score2 = 0
-        if self.language == "en" or self.language == "de":
+        if self.language == "en" or self.language == "de" or self.language == "ar":
             score = scorer.score(self.real_needle, response)['rouge1'].recall*100
             score2 = scorer.score(self.real_arg2, response)['rouge1'].recall*100
         else:

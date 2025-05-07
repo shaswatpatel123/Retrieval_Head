@@ -37,63 +37,65 @@ python -u needle_in_haystack.py --s_len 0 --e_len 128000\
 import os 
 import glob
 import json
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
 import sys
-import random
-sys.path.append("./faiss_attn/")
-from source.modeling_llama import LlamaForCausalLM, LlamaConfig
-from source.modeling_qwen2 import Qwen2ForCausalLM
-from source.modeling_mixtral import MixtralForCausalLM
-from source.modeling_mistral import MistralForCausalLM
-from source.modeling_phi3 import Phi3ForCausalLM
-
 import numpy as np
 import argparse
 from rouge_score import rouge_scorer
-
-scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
-
-#from openai import OpenAI
+from rouge_chinese import Rouge
+import jieba
 from datetime import datetime, timezone
 from collections import defaultdict
 import time
 import torch
+from tqdm import tqdm
+import wandb
+from matplotlib import pyplot as plt
+import matplotlib.patches as mpatches
+from transformers import BitsAndBytesConfig
 
 def reset_rope(model, model_max_train_len, scaling_factor):
     for l in model.model.layers:
         l.self_attn.rotary_emb.scaling_factor = scaling_factor
         l.self_attn.rotary_emb._set_cos_sin_cache(seq_len=model_max_train_len, device=l.self_attn.rotary_emb.inv_freq.device, dtype=torch.float32)
     return
+scorer = rouge_scorer.RougeScorer(['rouge1', 'rougeL'], use_stemmer=True)
+scorer_zh = Rouge()
 
 class LLMNeedleHaystackTester:
     """
     This class is used to test the LLM Needle Haystack.
     """
     def __init__(self,
-                 needle="\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n",
-                 haystack_dir="PaulGrahamEssays",
-                 retrieval_question="What is the best thing to do in San Francisco?",
-                 results_version = 1,
-                 context_lengths_min = 1000,
-                 context_lengths_max = 128000,
-                 context_lengths_num_intervals = 40,
-                 context_lengths = None,
-                 document_depth_percent_min = 0,
-                 document_depth_percent_max = 100,
-                 document_depth_percent_intervals = 10,
-                 document_depth_percents = None,
-                 document_depth_percent_interval_type = "linear",
-                 model_provider = "OpenAI",
-                 mask_topk=0,
-                 anthropic_api_key = None,
-                 model_name='',
-                 model_name_suffix=None,
-                 num_concurrent_requests = 1,
-                 save_results = True,
-                 save_contexts = True,
-                 final_context_length_buffer = 200,
-                 seconds_to_sleep_between_completions = None,
-                 print_ongoing_status = True):
+                needle="\nThe best thing to do in San Francisco is eat a sandwich and sit in Dolores Park on a sunny day.\n",
+                haystack_dir="./haystack_for_detect",
+                retrieval_question="What is the best thing to do in San Francisco?",
+                results_version = 1,
+                context_lengths_min = 1000,
+                context_lengths_max = 50000,
+                context_lengths_num_intervals = 20,
+                context_lengths = None,
+                document_depth_percent_min = 0,
+                document_depth_percent_max = 100,
+                document_depth_percent_intervals = 10,
+                document_depth_percents = None,
+                document_depth_percent_interval_type = "linear",
+                model_provider = "OpenAI",
+                model_name='',
+                model_name_suffix=None,
+                num_concurrent_requests = 1,
+                save_results = True,
+                save_contexts = True,
+                final_context_length_buffer = 200,
+                seconds_to_sleep_between_completions = None,
+                print_ongoing_status = True,
+                quantize=False,
+                language="en",
+                h_language=None,
+                wandb_logging=False,
+                mask_topk=0,
+                mask_lang=None,
+                ):
         """        
         :param needle: The needle to be found in the haystack. Default is None.
         :param haystack_dir: The directory of text files to use as background context (or a haystack) in which the needle is to be found. Default is Paul Graham Essays.
@@ -118,14 +120,46 @@ class LLMNeedleHaystackTester:
         :param model_name: The name of the model. Default is 'gpt-4-1106-preview'.
         :param seconds_to_sleep_between_completions: The number of seconds to sleep between completions. Default is None.
         :param print_ongoing_status: Whether or not to print the ongoing status. Default is True.
+        :param quantize: Whether to quantize the models or not
+        :param language: which language NIAH to setup
+        :param h_language: which haystack language to setup (if different from needle)
         """
+        self.wandb_logging = wandb_logging
+        if wandb_logging:
+            self.wandb_run = wandb.init()
+            self.wandb_run.log({'model_name': model_name,
+                'language': language,
+                'h_language': h_language,
+                'quantize': quantize,
+                'context_lengths_max': context_lengths_max,
+                'document_depth_percent_max': document_depth_percent_max
+            })
+
         if not needle or not haystack_dir or not retrieval_question:
             raise ValueError("Needle, haystack, and retrieval_question must be provided.")
+        self.language = language
+
+        if h_language is None:
+            self.h_language = language
+        else:
+            self.h_language = h_language
+
+        query_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.language}.jsonl")]
+        needle_stack = [json.loads(l) for l in open(f"{haystack_dir}/needles_{self.h_language}.jsonl")]
         
-        self.needle = needle
-        self.haystack_dir = haystack_dir
-        self.retrieval_question = retrieval_question
+        self.needle_list = [l["needle"] for l in needle_stack]
+        
+        self.retrieval_question_list = [l["retrieval_question"] for l in query_stack]
+        
+        self.real_ansers_list = [l["gold_standard_answer"] for l in query_stack]
+        
+        self.haystack_dir_list = [f"{haystack_dir}/{self.h_language}" for i in range(1, 4)]
+
+        self.arg2 = [l["arg2"] for l in query_stack]
+        
         self.results_version = results_version
+        self.mask_topk = mask_topk
+        self.mask_lang = mask_lang
         self.num_concurrent_requests = num_concurrent_requests
         self.save_results = save_results
         self.final_context_length_buffer = final_context_length_buffer
@@ -134,12 +168,10 @@ class LLMNeedleHaystackTester:
         self.print_ongoing_status = print_ongoing_status
         self.model_provider = model_provider
         self.testing_results = []
+            
+        
+        
         self.head_counter = defaultdict(list)
-        self.mask_topk = mask_topk
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            self.multi_gpus = len(os.environ["CUDA_VISIBLE_DEVICES"])>1
-        else:
-            self.multi_gpus = True
         if("/" in model_name):
             self.model_version = model_name.split("/")[-1]
         else: self.model_version = model_name
@@ -168,64 +200,110 @@ class LLMNeedleHaystackTester:
             raise ValueError("document_depth_percent_interval_type must be either None, 'linear' or 'sigmoid'. If you'd like your own distribution give a list of ints in via document_depth_percent_intervals")
         
         self.model_name = model_name
-
-        if(self.model_provider not in ["OpenAI", "Anthropic"]):
-            self.enc = AutoTokenizer.from_pretrained(model_name)
-            print("loading from %s" % model_name)
-            config = AutoConfig.from_pretrained(model_name)
-            self.layer_num, self.head_num = config.num_hidden_layers, config.num_attention_heads
-            print(f"layer number: {self.layer_num}, head number {self.head_num}")
-            if "Qwen" in self.model_version:
-                self.model_to_test = Qwen2ForCausalLM.from_pretrained(
-                       model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2"
-                    )
-            elif "Mixtral" in self.model_version:
-                self.model_to_test = MixtralForCausalLM.from_pretrained(
-                       model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
-                    )
-            elif "Mistral" in self.model_version:
-                self.model_to_test = MistralForCausalLM.from_pretrained(
-                       model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
-                    )
-            elif "Phi3" in self.model_version:
-                self.model_to_test = Phi3ForCausalLM.from_pretrained(
-                       model_name,torch_dtype="auto",device_map='auto',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
-                    )
-            else:
-                self.model_to_test = LlamaForCausalLM.from_pretrained(model_name,
-                    use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='auto').eval()
-            if 'llama-2-7b-80k' in self.model_version:
-                scaling_factor = 10
-                reset_rope(self.model_to_test, model_max_train_len=81920, scaling_factor=scaling_factor)
-        else: 
-            self.model_to_test = OpenAI(api_key=openai_api_key)
-            if(self.model_provider == "OpenAI"):
-                self.enc = tiktoken.encoding_for_model(self.model_name)
-            elif(self.model_provider == "Anthropic"):
-                self.enc = Anthropic().get_tokenizer()
-
-        self.model_to_test_description = model_name
         
-        self.evaluation_model = None
+        self.enc = AutoTokenizer.from_pretrained(model_name)
+        print("loading from %s" % model_name)
+        config = AutoConfig.from_pretrained(model_name)
+        self.layer_num, self.head_num = config.num_hidden_layers, config.num_attention_heads
+        print(f"layer number: {self.layer_num}, head number {self.head_num}")
+
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             self.multi_gpus = len(os.environ["CUDA_VISIBLE_DEVICES"])>1
+            if len(os.environ["CUDA_VISIBLE_DEVICES"])>1:
+                print("Multi GPU setup!")
         else:
             self.multi_gpus = True
-        model_name = model_name.split('/')[-1]
-        if self.mask_topk!=0:
-            if model_name=='Mistral-7B-Instruct-v0.2':
-                model_name = "Mistral-7B-v0.2-hf"
-            with open(f"head_score/{model_name}.json", "r") as file:
-                stable_block_list =  json.loads(file.readline())
-            stable_block_list = [(l[0], np.mean(l[1])) for l in stable_block_list.items()]
-            stable_block_list = sorted(stable_block_list, key=lambda x: x[1], reverse=True) 
-            self.block_list = [[int(ll) for ll in l[0].split("-")] for l in stable_block_list][:100]
-            if self.mask_topk > 0:
-                print(f"masking out top {self.mask_topk} retrieval heads")
-            else:
-                print(f"masking out random {-self.mask_topk}  heads")
+
+        if "a100" in torch.cuda.get_device_name(0).lower():
+            print("loading model on A100 with FIASS i.e. FLASH ATTN 2")
+            self.get_model_fiass()
         else:
-            self.block_list = []
+            print("loading model without FIASS")
+            # Use Huggingface AutoModelForCausalLM
+            if quantize:
+                print("loading quantized model!")
+                self.bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16
+                    )
+                
+                # device_map = "balanced" to enable Model Parallelism
+                self.model_to_test = AutoModelForCausalLM.from_pretrained(
+                        model_name,device_map='balanced', trust_remote_code=True, quantization_config=self.bnb_config
+                ).eval()
+            else:
+                self.model_to_test = AutoModelForCausalLM.from_pretrained(model_name,torch_dtype="auto",device_map='balanced', trust_remote_code=True).eval()
+
+        if 'llama-2-7b-80k' in self.model_version:
+            scaling_factor = 10
+            reset_rope(self.model_to_test, model_max_train_len=81920, scaling_factor=scaling_factor)
+            
+            
+        print("Model device map: ", self.model_to_test.hf_device_map)
+        if self.wandb_logging:
+            self.wandb_run.log( self.model_to_test.hf_device_map )
+
+        self.model_to_test_description = model_name
+        self.evaluation_model = None
+        self.debug='debug'
+        model_name = model_name.split('/')[-1]
+
+        # Union of All retrieval heads 
+        if "Qwen" in self.model_version: 
+            self.lang_agnostic_rh = [[20, 1], [20, 7], [32, 7], [25, 5], [32, 3], [20, 4], [31, 15], [31, 7], [7, 3], [20, 5], [31, 12], [31, 8], [33, 14], [20, 3], [33, 11], [33, 1], [32, 0], [33, 15], [32, 14], [32, 6], [27, 0], [27, 12], [33, 3], [22, 15], [32, 1], [33, 8], [33, 4], [21, 14], [33, 6], [32, 9], [5, 12], [33, 0], [32, 2], [27, 7], [33, 7], [33, 10], [33, 12], [33, 2], [32, 12], [31, 6], [33, 9]]
+            self.lang_specific_rh = [[30, 10], [28, 10], [25, 8], [32, 8], [30, 11], [25, 4], [32, 10], [33, 5], [22, 10], [29, 3], [22, 12], [30, 3], [19, 8], [27, 1], [26, 12], [26, 15], [21, 7]]
+        
+        ################## MASKING LOGIC ###########################
+        if self.mask_topk!=0:
+            # with open(f"head_score/{self.language}{self.h_language}/{self.model_version}.json", "r") as file:
+            #     stable_block_list =  json.loads(file.readline())
+            # stable_block_list = [(l[0], np.mean(l[1])) for l in stable_block_list.items()]
+            # stable_block_list = sorted(stable_block_list, key=lambda x: x[1], reverse=True) 
+            # self.block_list = [[int(ll) for ll in l[0].split("-")] for l in stable_block_list][:100]
+            self.block_list = self.lang_specific_rh
+            if self.mask_topk > 0:
+                print(f"masking out top {self.mask_topk} of language agnostic retrieval heads along with all language specific heads")
+                print("self.block_list: ", self.block_list)
+            else:
+                print(f"masking out random {-self.mask_topk} heads")
+        else:
+            self.block_list = self.lang_specific_rh
+ 
+    
+    def get_model_fiass(self):
+        sys.path.append("./faiss_attn/")
+        from source.modeling_llama import LlamaForCausalLM
+        from source.modeling_qwen2 import Qwen2ForCausalLM
+        from source.modeling_mixtral import MixtralForCausalLM
+        from source.modeling_mistral import MistralForCausalLM
+        from source.modeling_phi3 import Phi3ForCausalLM
+
+        if "Qwen" in self.model_version:
+            self.model_to_test = Qwen2ForCausalLM.from_pretrained(
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2"
+                ).eval()
+        elif "Mixtral" in self.model_version:
+            self.model_to_test = MixtralForCausalLM.from_pretrained(
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                ).eval()
+        elif "Mistral" in self.model_version:
+            self.model_to_test = MistralForCausalLM.from_pretrained(
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                ).eval()
+        elif "Phi" in self.model_version:
+            self.model_to_test = Phi3ForCausalLM.from_pretrained(
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                ).eval()
+        elif "Ministral" in self.model_version:
+            self.model_to_test = MistralForCausalLM.from_pretrained(
+                    model_name,torch_dtype="auto",device_map='balanced',use_flash_attention_2="flash_attention_2",trust_remote_code=True,
+                ).eval()
+        else:
+            self.model_to_test = LlamaForCausalLM.from_pretrained(model_name,
+                use_flash_attention_2="flash_attention_2", torch_dtype=torch.bfloat16,device_map='balanced').eval()
+            
 
     def logistic(self, x, L=100, x0=50, k=.1):
         if x == 0:
@@ -238,110 +316,165 @@ class LLMNeedleHaystackTester:
         self.evaluate_and_log(*args)
 
     def run_test(self, args):
-
         # Run through each iteration of context_lengths and depths
         tasks = []
+        total_iters = len(self.context_lengths) * len(self.document_depth_percents)
+        pbar = tqdm(total=total_iters)
+         
         for context_length in self.context_lengths:
             if context_length < args.s_len or context_length > args.e_len: continue
             for depth_percent in self.document_depth_percents:
                 task = self.bound_evaluate_and_log(context_length, depth_percent)
+                pbar.update(1)
 
-    def generate_prompt(self, context):
-        # Generate the prompt for the Anthropic model
-        # Replace the following line with the appropriate prompt structure
-        test_format=f"This is a very long story book: <book> {context} </book>.\n"
-        if self.model_version in ["Mistral-7B-Instruct-v0.2"]:
-            prompt = [
-            {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\nAnswer:"},]
-        return prompt
-    
     def retrieval_calculate(self, attention_maxtrix,retrieval_score, inp, step_token,topk=1):
-        for layer_idx in range(32):
-            for head_idx in range(32):
+        for layer_idx in range(self.layer_num):
+            for head_idx in range(self.head_num):
+                att = attention_maxtrix[layer_idx][0][head_idx][-1]  # shape: (seq_len,)
+                if att.sum() == 0:  # if attention is fully zeroed out   
+                    continue  # skip this head
+
                 values, idx = attention_maxtrix[layer_idx][0][head_idx][-1].topk(topk)
                 for v, i in zip(values, idx):
                     if  self.needle_start <= i < self.needle_end and inp.item()==self.prompt_ids[i].item():
-                        retrieval_score[layer_idx][head_idx][0] += 1/(self.needle_end - self.needle_start)
+                        retrieval_score[layer_idx][head_idx][0] += 1
                         retrieval_score[layer_idx][head_idx][1] += step_token
                         break
     def retrieval_head_accumulate(self, retrieval_score):
-        for layer_idx in range(32):
-            for head_idx in range(32):
+        for layer_idx in range(self.layer_num):
+            for head_idx in range(self.head_num):
                 self.head_counter[f"{layer_idx}-{head_idx}"].append(retrieval_score[layer_idx][head_idx][0])
 
     def decode(self, q_outputs, inp, decode_len, block_list=None):
-        output, retrieval_score = [], [[[0, ''] for _ in range(32)] for _ in range(32)]
+        output, retrieval_score = [], [[[0, ''] for _ in range(self.head_num)] for _ in range(self.layer_num)]
         past_kv = q_outputs.past_key_values
         for step_i in range(decode_len):
             inp = inp.view(1, 1)
-            outputs = self.model_to_test(input_ids=inp, past_key_values=past_kv, use_cache=True, \
-                 output_attentions=False, block_list=block_list)
+            
+            if "a100" in torch.cuda.get_device_name(0).lower():
+                outputs = self.model_to_test(
+                    input_ids=inp, 
+                    past_key_values=past_kv, 
+                    use_cache=True, 
+                    output_attentions=True, 
+                    attn_mode="torch",
+                    block_list=block_list)
+            else:
+                outputs = self.model_to_test(
+                    input_ids=inp, 
+                    past_key_values=past_kv, 
+                    use_cache=True, 
+                    output_attentions=True,
+                    block_list=block_list)
+
             past_kv = outputs.past_key_values
             inp = outputs.logits[0, -1].argmax()
             step_token = self.enc.convert_ids_to_tokens(inp.item())
             output.append(inp.item())
-            #self.retrieval_calculate(outputs.attentions, retrieval_score, inp, step_token)
+            self.retrieval_calculate(outputs.attentions, retrieval_score, inp, step_token)
             if step_token=='<0x0A>' or inp.item()==144: break
-            
         return output, retrieval_score 
 
     def find_needle_idx(self, needle):
         needle_ids = self.enc(needle, add_special_tokens=False)["input_ids"]
-        #print( self.enc.decode(needle_ids, skip_special_tokens=False))
+        print( self.enc.decode(needle_ids, skip_special_tokens=False))
         span_len = len(needle_ids)
-        for i in range(len(self.prompt_ids)):
-            
+        for i in range(len(self.prompt_ids)):            
             token_span = self.prompt_ids[i : i + span_len]
             span_ids = set(token_span.tolist())
             overlap = float(len(span_ids.intersection(set(needle_ids)))) / len(set(needle_ids))
             if(overlap > 0.9):
                 return i, i + span_len
         return -1, -1
-    def construct_random_head(self, n):
-        results = []
-        seed_list = [i  for i in range(32)]
-        random.shuffle(seed_list)
-        while len(results) < n:
-            l, h = random.choices(seed_list, k=2)
-            if (l, h) in results or (l, h) in self.block_list:
-                continue
-            else:
-                results.append((l, h))
-        return results
+
     def evaluate_and_log(self, context_length, depth_percent):
         # Checks to see if you've already checked a length/percent/version.
         # This helps if the program stop running and you want to restart later
         # Go generate the required length context and place your needle statement in
+        
+        #################### MASKING LOGIC #######################
         if self.mask_topk > 0:
-            block_list = self.block_list[:self.mask_topk]
+            self.block_list.extend(self.lang_agnostic_rh[:self.mask_topk])
+            block_list = self.block_list
             save_name = f"{self.model_version}_block_top{self.mask_topk}"
         elif self.mask_topk == 0:
-            block_list = None
+            block_list = self.block_list
             save_name = self.model_version
         else:
             block_list = self.construct_random_head(-self.mask_topk)
             save_name = f"{self.model_version}_block_random{-self.mask_topk}"
+        
+        print("Block list: ", block_list)
+            
+            
+        enforce_language = True
         context = self.generate_context(context_length, depth_percent)
-        question = f"Based on the content of the book, Question: {self.retrieval_question}\nAnswer:"
-        if self.model_version in ["Mistral-7B-Instruct-v0.2", "Qwen1.5-14B-Chat"]:
-            prompt = [
-            {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\nAnswer:"},
-            ]
+        if self.language == "en":
+            if enforce_language:
+                ans_format = "Answer in English"
+            else:
+                ans_format = "Answer"
+            question = f"Based on the content of the book, Question: {self.retrieval_question}\n{ans_format}:"
+
+        elif self.language == "de":
+            if enforce_language:
+                ans_format = "Antwort auf Deutsch"
+            else:
+                ans_format = "Antwort"
+            question = f"Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\n{ans_format}:"
+
+        elif self.language == "zh":
+            if enforce_language:
+                ans_format = "用中文囔"
+            else:
+                ans_format = "回答"
+            question = f"根据书本内容，提出问: {self.retrieval_question}\n{ans_format}:"
+            # print(question)
+
+        elif self.language == "ar":
+            if enforce_language:
+                ans_format = "ﺎﺠﺎﺑﺓ ﺎﻠﻟﻐﺔ ﺎﻠﻋﺮﺑﻴﺔ"
+            else:
+                ans_format = "ﺍﻺﺟﺎﺑﺔ"
+            
+            question = f"ﺎﺴﺘﻧﺍﺩًﺍ ﺈﻟﻯ ﻢﺤﺗﻭﻯ ﺎﻠﻜﺗﺎﺑ، ﺎﻠﺳﺅﺎﻟ: {self.retrieval_question}\n{ans_format}:"
+            # print(question)
+
+        '''
+        if self.model_version=="Qwen1.5-14B-Chat":
+            context = "<|im_start|>system\nYou are a helpful assistant<|im_end|>\n<|im_start|>user\n" + context input_context = "f{context}\nquestion<|im_end|>\n<|im_start|>assistant\n
+            question += '<|im_end|>\n<|im_start|>assistant\n'
+            input_ids = self.enc(input_context , return_tensors="pt")['input_ids']
+        '''
+        if self.model_version in ["Mistral-7B-Instruct-v0.2", "Qwen1.5-14B-Chat", "Ministral-8B-Instruct-2410"]:
+            if self.language == "zh":
+                prompt = [
+                    {"role": "user", "content": f"<book>{context}</book>根据书中内容，提出问题：{self.retrieval_question}\n{ans_format}:"},
+                ]
+            elif self.language == "de":
+                prompt = [
+                    {"role": "user", "content": f"<book>{context}</book>Basierend auf dem Inhalt des Buches, Frage: {self.retrieval_question}\n{ans_format}:"},                                                                                                                             ]
+            elif self.language == "ar":
+                prompt = [
+                        {"role": "user", "content": f"<book>{context}</book>\nﺎﺴﺘﻧﺍﺩًﺍ ﺈﻟﻯ ﻢﺤﺗﻭﻯ ﺎﻠﻜﺗﺎﺑ، ﺎﻠﺳﺅﺎﻟ: {self.retrieval_question}\n{ans_format}:"}
+                ]
+            else:
+                prompt = [
+                    {"role": "user", "content": f"<book>{context}</book>\nBased on the content of the book, Question: {self.retrieval_question}\n{ans_format}:"},
+                ]
+
             input_ids = self.enc.apply_chat_template(conversation=prompt, tokenize=True,  add_generation_prompt=True, return_tensors='pt')
         else:
             input_context = context + question
             input_ids = self.enc(input_context , return_tensors="pt")['input_ids']
-        
-            
+        # Prepare your message to send to the model you're going to evaluate
         test_start_time = time.time()
-      
-        self.real_needle = "eat a sandwich and sit in Dolores Park on a sunny day"
-        #self.prompt_ids = torch.concat([context_ids, question_ids], dim=1)[0, :]
         self.prompt_ids = input_ids[0, :]
         if not self.multi_gpus:
             input_ids = input_ids.to(self.model_to_test.device)
-
-        self.needle_start, self.needle_end = self.find_needle_idx(self.real_needle)
+        self.needle_start, self.needle_end = self.find_needle_idx(self.needle)
+        input_ids = input_ids.to(self.model_to_test.device)
+        print("Block list: ", block_list)
         with torch.no_grad():
             q_outputs = self.model_to_test(input_ids=input_ids[:,:-1], use_cache=True, return_dict=True)
             output, retrieval_score  = self.decode(q_outputs, input_ids[:,-1], 50, block_list=block_list)
@@ -350,7 +483,51 @@ class LLMNeedleHaystackTester:
         test_end_time = time.time()
         test_elapsed_time = test_end_time - test_start_time
         
-        score = scorer.score(self.real_needle, response)['rouge1'].recall*100
+        score2 = 0
+        if self.language == "en" or self.language == "de":
+            score = scorer.score(self.real_needle, response)['rouge1'].recall*100
+            score2 = scorer.score(self.real_arg2, response)['rouge1'].recall*100
+        else:
+            response = ' '.join(jieba.cut(response))
+            real_needle_zh =  ' '.join(jieba.cut(self.real_needle))
+            
+            try:
+                score = scorer_zh.get_scores(response, real_needle_zh)[0]["rouge-1"]["r"]*100
+            except:
+                # In case of empty response!
+                score = 0
+
+            try:
+                real_arg2_zh = ' '.join(jieba.cut(self.real_arg2))
+                score2 = scorer_zh.get_scores(response, real_arg2_zh)[0]["rouge-1"]["r"]*100
+            except:
+                score2 = 0
+
+
+        print("Calculating retrieval_score")
+        if score <= 50 and score2 >= 99:
+            #  (self.needle_end - self.needle_start)
+            needle_start, needle_end = self.find_needle_idx(self.real_arg2)
+            for layer_idx in range(self.layer_num):
+                for head_idx in range(self.head_num):
+                    retrieval_score[layer_idx][head_idx][0] /= ((needle_end - needle_start) + 1)
+        elif score > 50:
+            needle_start, needle_end = self.find_needle_idx(self.needle)
+            for layer_idx in range(self.layer_num):
+                for head_idx in range(self.head_num):
+                    retrieval_score[layer_idx][head_idx][0] /= ((needle_end - needle_start) + 1)
+       ## if recall > 50, we determine this retrieval succeed and update the retrieval score
+        if score > 50 or score2 >= 99:
+            self.retrieval_head_accumulate(retrieval_score)
+            head_score = [(i[0], np.mean(i[1])) for i in self.head_counter.items()]
+            head_score = sorted(head_score, key=lambda x:x[1], reverse=True)
+            print([i for i in head_score][:20])
+        
+        
+        if score <= 50 and score2 >= 99:
+            # Make logging easy
+            score = score2
+        
         results = {
             'model' : self.model_to_test_description,
             'context_length' : int(context_length),
@@ -363,6 +540,10 @@ class LLMNeedleHaystackTester:
             'test_timestamp_utc' : datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S%z')
         }
 
+        if self.wandb_logging:
+            self.wandb_run.log(results)
+        
+
         self.testing_results.append(results)
 
         if self.print_ongoing_status:
@@ -374,16 +555,27 @@ class LLMNeedleHaystackTester:
             print (f"Response: {response}\n")
 
         context_file_location = f'{self.model_version.replace(".", "_")}_len_{context_length}_depth_{int(depth_percent*100)}'
-        
-      
+
+        if self.save_contexts:
+            results['file_name'] : context_file_location
+
+            # Save the context to file for retesting
+            if not os.path.exists(f'contexts/{self.language}{self.h_language}'):
+                os.makedirs(f'contexts/{self.language}{self.h_language}', exist_ok=True)
+
+            if not os.path.exists(f'contexts/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked'):
+                os.makedirs(f'contexts/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked', exist_ok=True)
+
+            with open(f'contexts/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked/{context_file_location}_context.txt', 'w') as f:
+                f.write(context)
+            
         if self.save_results:
             # Save the context to file for retesting
-            if not os.path.exists(f'results/graph/{save_name}'):
-                os.makedirs(f'results/graph/{save_name}')
+            if not os.path.exists(f'results/graph/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked'):
+                os.makedirs(f'results/graph/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked')
             
-    
             # Save the result to file for retesting
-            p = f'results/graph/{save_name}/{context_file_location}_results.json'
+            p = f'results/graph/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked/{context_file_location}_needle{self.ni}_results.json'
             print("Writing at %s" % p)
             with open(p, 'w') as f:
                 json.dump(results, f)
@@ -490,10 +682,27 @@ class LLMNeedleHaystackTester:
         context = ""
         max_context_length = max(self.context_lengths)
 
-        while self.get_context_length_in_tokens(context) < max_context_length:
-            for file in glob.glob(f"{self.haystack_dir}/*.txt"):
-                with open(file, 'r') as f:
-                    context += f.read()
+        if self.h_language == "zh":
+            local_c_len = 0
+            while local_c_len < max_context_length:
+                for file in glob.glob(f"{self.haystack_dir}/*.jsonl"):
+                    with open(file, "r") as f:
+                        for line in f.readlines():
+                            if local_c_len < max_context_length:
+                                local_c_len += self.get_context_length_in_tokens(json.loads(line)['text'])
+                                context += json.loads(line)['text']
+                            else:
+                                break
+
+        else:
+            while len(context.split()) < max_context_length:
+                for file in glob.glob(f"{self.haystack_dir}/*.jsonl"):
+                    with open(file, "r") as f:
+                        for line in f.readlines():
+                            if len(context.split()) < max_context_length:
+                                context += json.loads(line)["text"]
+                            else:
+                                break
         return context
 
     def get_tokens_from_context(self, context):
@@ -532,11 +741,84 @@ class LLMNeedleHaystackTester:
         print (f"- Needle: {self.needle.strip()}")
         print ("\n\n")
 
+    def wandb_plot(self):
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}_masked.json", 'r') as f:
+            head_list = json.load( f )
+
+        head_score_list = [([int(ll) for ll in l[0].split("-")],np.mean(l[1])) for l in head_list.items()]
+        head_score_list = sorted(head_score_list, key=lambda x: x[1], reverse=True)
+        top_retrieval_heads = [[l[0],  round(np.mean(l[1]), 2)] for l in head_score_list]
+
+        scores = [ i[1] for i in top_retrieval_heads ]
+
+        def get_color(score):
+            if score >= 0.5:
+                return '#FF4C4C'  # red
+            elif score >= 0.1:
+                return '#FFA07A'  # light coral / salmon
+            elif score > 0.0:
+                return '#4682B4'  # steel blue
+            else:
+                return '#ADD8E6'  # light blue
+
+        color_grouped_scores = defaultdict(float)
+        for score in scores:
+            color_grouped_scores[get_color(score)] += 1
+
+        sorted_groups = sorted(color_grouped_scores.items(), key=lambda x: x[1], reverse=True)
+
+        grouped_scores = [v for _, v in sorted_groups]
+        grouped_colors = [c for c, _ in sorted_groups]
+
+        color_meanings = {
+            '#FF4C4C': '≥ 0.5',
+            '#FFA07A': '0.1 – 0.5',
+            '#4682B4': '0.0 – 0.1',
+            '#ADD8E6': '0'
+        }
+
+        legend_handles = [mpatches.Patch(color=color, label=color_meanings[color]) for color in grouped_colors]
+
+        fig, ax = plt.subplots(figsize=(16, 16))
+        wedges, texts, autotexts = ax.pie(
+            grouped_scores,
+            labels=None,  # No labels
+            autopct='%1.1f%%',
+            startangle=90,
+            colors=grouped_colors,
+            wedgeprops=dict(width=0.4)
+        )
+
+        centre_circle = plt.Circle((0, 0), 0.70, fc='white')
+        fig.gca().add_artist(centre_circle)
+        ax.axis('equal')
+        plt.title(f"Top Retrieval Head Colors {self.language} {self.h_language} {self.model_version}")
+        plt.legend(handles=legend_handles, title="Score Range", loc="upper right")
+        self.wandb_run.log({f"retrieval_head_{self.model_version}_{self.language}_{self.h_language}": wandb.Image(fig)})
+        plt.close(fig)
+
+
     def start_test(self, args):
-        if self.print_ongoing_status:
-            self.print_start_test_summary()
-        #asyncio.run(self.run_test())
-        self.run_test(args)
+        for ni in range(len(self.needle_list)):
+            self.needle = self.needle_list[ni]
+            self.ni = ni
+            self.haystack_dir = self.haystack_dir_list[ni]
+            self.real_needle  = self.real_ansers_list[ni]
+            self.real_arg2 = self.arg2[ni]
+            self.retrieval_question = self.retrieval_question_list[ni]
+            if self.print_ongoing_status:
+                self.print_start_test_summary()
+            self.run_test(args)
+        os.makedirs(f"head_score/{self.language}{self.h_language}/", exist_ok=True)
+        if os.path.exists(f"head_score/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked.json"):
+            with open(f"./head_score/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked.json", "r") as file:
+                head_counter = json.loads(file.readline())
+            for k,v in head_counter.items():
+                self.head_counter[k] += v
+        with open(f"head_score/{self.language}{self.h_language}/{self.model_version}_{str(self.mask_topk)}masked.json", 'w') as f:
+            json.dump(self.head_counter, f)
+
+        # self.wandb_plot()
 
 
 if __name__ == "__main__":
@@ -548,25 +830,31 @@ if __name__ == "__main__":
     parser.add_argument('--model_name', type=str, default=None, help='name of model')
     parser.add_argument('--model_name_suffix', type=str, default=None, help='name of model')
     parser.add_argument('--model_provider', type=str, default="LLaMA", help='which model to use')
-    parser.add_argument('--api_key', type=str, default="", help='OpenAI API Key')
+    parser.add_argument('--quantize', action='store_true', help='Enable model quantization')
+    parser.add_argument('--language', type=str, default="en", help="Specify the language to test")
+    parser.add_argument('-hl','--haystack_language', type=str, help="[OPTIONAL] Specify haystack language, if different from needle") 
+    parser.add_argument('--wandb', action='store_true', help='Enable wandb logging')
     parser.add_argument('--mask_topk', type=int, default=0, help='mask topk heads, input a negative value to mask random heads')
-    # parser = add_args(parser)
+    # parser.add_argument('--mask_rest', type=int, default=0, help='mask all heads except top-k heads')
+    parser.add_argument('--mask_lang', type=str, default="en", help='mask head language - <l1><l2>, where l1 is query language and l2 is needle/haystack language')
+    
+    
     args = parser.parse_args()
-
-    if(args.model_path is not None):
-        assert(args.model_name is None)
-        model_name = args.model_path
-    else: 
-        assert(args.model_name is not None)
+   
+    model_name = args.model_path
 
     ht = LLMNeedleHaystackTester(model_name=model_name, 
                                  model_name_suffix=args.model_name_suffix,
                                  model_provider=args.model_provider,
                                  save_contexts=True,
                                  save_results=True,
+                                 context_lengths_min=args.s_len,
+                                 context_lengths_max=args.e_len,
+                                 quantize=args.quantize,
                                  mask_topk=args.mask_topk,
-                                context_lengths_min=args.s_len,
-                                context_lengths_max=args.e_len,
+                                 language=args.language,
+                                 h_language=args.haystack_language,
+                                 wandb_logging=args.wandb
                                  )
 
     ht.start_test(args)
